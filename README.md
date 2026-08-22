@@ -4,7 +4,11 @@
 
 # OhMyStash for Oh My Pi
 
-OhMyStash (OMS) stores unfinished OMP prompts without submitting them. It preserves normal and `/queue` drafts, images, collapsed large pastes, timestamps, source-chat metadata, and locks.
+I'm proud to present OhMyStash! OMS stores unfinished OhMyPi prompts without submitting them. It preserves normal and `/queue` drafts, images, collapsed large pastes, timestamps, source-chat metadata, locks, and a whole lot more!
+
+![OhMyStash browser populated with prompts from several chats](assets/ohmystash-browser.png)
+
+I had a ton of fun making this, and I hope you find it just as useful as I do!
 
 ## Install
 
@@ -36,7 +40,7 @@ omp plugin doctor @hkay-dev/ohmystash
 
 OMP uses the package ID `@hkay-dev/ohmystash` for plugin settings and diagnostics. Existing stash storage paths do not change.
 
-## Two ways to use OMS
+## Primary Usage
 
 ### `Alt+S`: stash and restore one prompt
 
@@ -48,13 +52,13 @@ Press `Alt+S` on an empty composer to restore the newest stash from the current 
 
 Press `Alt+Shift+S` to open the full stash browser. The browser supports preview, search, chat scope, queue actions, editing, locking, and deletion.
 
-![OhMyStash browser populated with prompts from several chats](assets/ohmystash-browser.png)
-
 Considerable work went into the browser's visual hierarchy, color treatment, spacing, and keyboard flow.
 
 ## Browser capabilities
 
-- **Chat scope.** Open on stashes from the current chat and press `g` to switch to all chats.
+You can do quite a bit more in the browser: 
+
+- **Chat scope.** Open stashes from the current chat and press `g` to switch to all chats.
 - **Source metadata.** Global entries show the source chat, workspace, timestamp, and short session ID.
 - **Search.** Filter prompt text, chat names, workspaces, timestamps, queue mode, locks, and attachments.
 - **Queue draft.** Press `q` to place the selected stash in the composer as an editable `/queue` draft.
@@ -64,7 +68,7 @@ Considerable work went into the browser's visual hierarchy, color treatment, spa
 - **Locking.** Lock reusable stashes so deletion leaves them alone.
 - **Scoped deletion.** Delete one unlocked stash or clear unlocked stashes from the current browser scope.
 
-## Feature recordings
+## More Features!
 
 ### Current chat and all chats
 
@@ -150,7 +154,7 @@ Available settings:
 
 Retention removes only expired, unlocked, normal stashes. Locked stashes, conflict copies, and recovery entries do not expire.
 
-The same settings are available from the CLI:
+All the same settings are available from the CLI:
 
 ```sh
 omp plugin config list @hkay-dev/ohmystash
