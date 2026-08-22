@@ -6,6 +6,36 @@
 
 OhMyStash (OMS) stores unfinished OMP prompts without submitting them. It preserves normal and `/queue` drafts, images, collapsed large pastes, timestamps, source-chat metadata, and locks.
 
+## Install
+
+OMP's plugin manager uses Bun for package installation:
+
+```sh
+brew install bun
+```
+
+Install OhMyStash directly from GitHub:
+
+```sh
+omp plugin install github:hkay-dev/OhMyStash
+```
+
+Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
+
+To update OhMyStash after a new release:
+
+```sh
+omp plugin install --force github:hkay-dev/OhMyStash
+```
+
+Check the installed package and extension manifest with:
+
+```sh
+omp plugin doctor @hkay-dev/pi-prompt-stash
+```
+
+The display name is OhMyStash. The package ID and configuration key remain `@hkay-dev/pi-prompt-stash`. Existing extension and storage paths do not change.
+
 ## Two ways to use OMS
 
 ### `Alt+S`: stash and restore one prompt
@@ -132,36 +162,6 @@ omp plugin config delete @hkay-dev/pi-prompt-stash "Browser layout"
 ```
 
 OMS reloads plugin settings when a new OMP session starts.
-
-## Install
-
-OMP's plugin manager uses Bun for package installation:
-
-```sh
-brew install bun
-```
-
-Install OhMyStash directly from GitHub:
-
-```sh
-omp plugin install github:hkay-dev/OhMyStash
-```
-
-Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
-
-To update OhMyStash after a new release:
-
-```sh
-omp plugin install --force github:hkay-dev/OhMyStash
-```
-
-Check the installed package and extension manifest with:
-
-```sh
-omp plugin doctor @hkay-dev/pi-prompt-stash
-```
-
-The display name is OhMyStash. The package ID and configuration key remain `@hkay-dev/pi-prompt-stash`. Existing extension and storage paths do not change.
 
 ## Reliability
 
