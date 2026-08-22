@@ -31,10 +31,10 @@ omp plugin install --force github:hkay-dev/OhMyStash
 Check the installed package and extension manifest with:
 
 ```sh
-omp plugin doctor @hkay-dev/pi-prompt-stash
+omp plugin doctor @hkay-dev/ohmystash
 ```
 
-The display name is OhMyStash. The package ID and configuration key remain `@hkay-dev/pi-prompt-stash`. Existing extension and storage paths do not change.
+OMP uses the package ID `@hkay-dev/ohmystash` for plugin settings and diagnostics. Existing stash storage paths do not change.
 
 ## Two ways to use OMS
 
@@ -131,7 +131,7 @@ Locked stashes remain protected during bulk deletion.
 
 ## Settings
 
-Open `/settings`, choose **Plugins**, select `@hkay-dev/pi-prompt-stash`, and press `Enter`.
+Open `/settings`, choose **Plugins**, select `@hkay-dev/ohmystash`, and press `Enter`.
 
 ![OhMyStash settings in OMP](assets/ohmystash-settings.png)
 
@@ -153,12 +153,12 @@ Retention removes only expired, unlocked, normal stashes. Locked stashes, confli
 The same settings are available from the CLI:
 
 ```sh
-omp plugin config list @hkay-dev/pi-prompt-stash
-omp plugin config set @hkay-dev/pi-prompt-stash "Browser layout" "Stacked"
-omp plugin config set @hkay-dev/pi-prompt-stash "Retention days" 30
-omp plugin config set @hkay-dev/pi-prompt-stash "Editor command" "code --wait"
-omp plugin config set @hkay-dev/pi-prompt-stash "Dim background" false
-omp plugin config delete @hkay-dev/pi-prompt-stash "Browser layout"
+omp plugin config list @hkay-dev/ohmystash
+omp plugin config set @hkay-dev/ohmystash "Browser layout" "Stacked"
+omp plugin config set @hkay-dev/ohmystash "Retention days" 30
+omp plugin config set @hkay-dev/ohmystash "Editor command" "code --wait"
+omp plugin config set @hkay-dev/ohmystash "Dim background" false
+omp plugin config delete @hkay-dev/ohmystash "Browser layout"
 ```
 
 OMS reloads plugin settings when a new OMP session starts.

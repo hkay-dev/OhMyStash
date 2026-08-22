@@ -1,6 +1,6 @@
 {
-  "name": "@hkay-dev/pi-prompt-stash",
-  "version": "1.8.2",
+  "name": "@hkay-dev/ohmystash",
+  "version": "1.8.3",
   "private": true,
   "type": "module",
   "description": "OhMyStash (OMS), a durable chat-scoped and global prompt manager for Oh My Pi.",

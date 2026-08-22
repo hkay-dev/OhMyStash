@@ -67,7 +67,7 @@ const writeLayout = (layout: string) =>
     join(projectConfigDir, "plugin-overrides.json"),
     JSON.stringify({
       settings: {
-        "@hkay-dev/pi-prompt-stash": {
+        "@hkay-dev/ohmystash": {
           "Browser layout": layout,
           "Dim background": true,
           "Maximum body rows": 36,

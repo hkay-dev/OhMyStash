@@ -32,7 +32,7 @@ const TEST_ORIGIN = {
   sessionId: TEST_SESSION_ID,
   sessionName: "OhMyStash Tests",
   sessionStartedAt: TEST_SESSION_STARTED_AT,
-  workspaceName: "pi-prompt-stash-tests",
+  workspaceName: "ohmystash-tests",
 };
 let stashCommand: { handler: (args: string, ctx: ExtensionContext) => Promise<void> | void };
 let stashShortcut: { handler: (ctx: ExtensionContext) => Promise<void> | void };
@@ -59,7 +59,7 @@ function writeSettings(settings: Record<string, unknown>): void {
   mkdirSync(projectConfigDir, { recursive: true, mode: 0o700 });
   writeFileSync(
     join(projectConfigDir, "plugin-overrides.json"),
-    JSON.stringify({ settings: { "@hkay-dev/pi-prompt-stash": settings } }),
+    JSON.stringify({ settings: { "@hkay-dev/ohmystash": settings } }),
     { mode: 0o600 },
   );
 }

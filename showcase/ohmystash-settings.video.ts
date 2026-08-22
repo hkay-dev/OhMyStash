@@ -59,7 +59,7 @@ export default defineVideo(
     await t.enter();
     await t.wait(/Appearance/, { scope: "screen" });
     await t.right(10);
-    await t.wait(/@hkay-dev\/pi-prompt-stash/, { scope: "screen" });
+    await t.wait(/@hkay-dev\/ohmystash/, { scope: "screen" });
     await t.sleep("900ms");
     await t.key("enter");
     await t.wait(/Background brightness/, { scope: "screen" });

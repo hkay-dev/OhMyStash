@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { defineVideo } from "tcut";
@@ -37,13 +37,6 @@ for (const file of ["config.yml", "models.yml"]) {
 mkdirSync(stashDir, { recursive: true, mode: 0o700 });
 mkdirSync(attachmentDir, { recursive: true, mode: 0o700 });
 mkdirSync(assetsDir, { recursive: true });
-if (feature === "scope") {
-  for (const file of readdirSync(assetsDir)) {
-    if (file.startsWith("ohmystash-feature-")) {
-      rmSync(join(assetsDir, file), { force: true });
-    }
-  }
-}
 
 const imageData = readFileSync(join(root, "assets", "ohmystash-header.png"));
 const imageHash = new Bun.SHA256().update(imageData).digest("hex");
@@ -62,7 +55,7 @@ const fixtures = [
     minutes: 2,
     text: "Document the OhMyStash 1.7 release\n\nCover chat scope, terminal UI, reliability, and the new capture workflow.",
     sessionName: "OhMyStash README",
-    workspaceName: "pi-prompt-stash",
+    workspaceName: "OhMyStash",
     locked: true,
     attachments: [{ kind: "image", ref: imageRef, byteLength: imageData.byteLength, mimeType: "image/png" }],
   },
@@ -73,14 +66,14 @@ const fixtures = [
         ? 'Reply with exactly "Queue demo started." Do not use tools.'
         : "Compare warm-load performance across 256 stashes",
     sessionName: "Performance review",
-    workspaceName: "pi-prompt-stash",
+    workspaceName: "OhMyStash",
     inputMode: "queue",
   },
   {
     minutes: 16,
     text: "Review the terminal modal dimming and color reset",
     sessionName: "Terminal UI",
-    workspaceName: "pi-prompt-stash",
+    workspaceName: "OhMyStash",
   },
   {
     minutes: 28,
@@ -93,7 +86,7 @@ const fixtures = [
     minutes: 43,
     text: "Queue the attachment recovery regression tests",
     sessionName: "Release checks",
-    workspaceName: "pi-prompt-stash",
+    workspaceName: "OhMyStash",
     inputMode: "queue",
     attachments: [{ kind: "body", ref: bodyRef, byteLength: bodyData.byteLength, charCount: bodyData.byteLength, lineCount: 60_001 }],
   },
@@ -101,7 +94,7 @@ const fixtures = [
     minutes: 68,
     text: "Tighten the README copy around reliability and performance",
     sessionName: "README edits",
-    workspaceName: "pi-prompt-stash",
+    workspaceName: "OhMyStash",
   },
   {
     minutes: 97,
@@ -114,13 +107,13 @@ const fixtures = [
     minutes: 144,
     text: "Prepare a reusable prompt for release notes",
     sessionName: "Prompt library",
-    workspaceName: "pi-prompt-stash",
+    workspaceName: "OhMyStash",
   },
   {
     minutes: 218,
     text: "Check compact layout controls at narrow terminal widths",
     sessionName: "Responsive browser",
-    workspaceName: "pi-prompt-stash",
+    workspaceName: "OhMyStash",
   },
   {
     minutes: 302,
@@ -133,7 +126,7 @@ const fixtures = [
     minutes: 418,
     text: "Reproduce the concurrent editor conflict path",
     sessionName: "Concurrency test",
-    workspaceName: "pi-prompt-stash",
+    workspaceName: "OhMyStash",
   },
   {
     minutes: 611,

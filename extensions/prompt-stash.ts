@@ -185,7 +185,7 @@ const COMPACT_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
 const TRUECOLOR_SGR =
   /\x1b\[(?:(38|48);2;(\d+);(\d+);(\d+)|(38|48):2::(\d+):(\d+):(\d+))m/g;
 const INTENSITY_OR_RESET_SGR = /\x1b\[(0|1|22|39)m/g;
-const PLUGIN_NAME = "@hkay-dev/pi-prompt-stash";
+const PLUGIN_NAME = "@hkay-dev/ohmystash";
 const DEFAULT_CONFIG: PromptStashConfig = {
   stashShortcut: "alt+s",
   editorCommand: "",
