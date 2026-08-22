@@ -1,0 +1,118 @@
+{
+  "name": "@hkay-dev/pi-prompt-stash",
+  "version": "1.8.2",
+  "private": true,
+  "type": "module",
+  "description": "OhMyStash (OMS), a durable chat-scoped and global prompt manager for Oh My Pi.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hkay-dev/OhMyStash.git"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "bun test tests/prompt-stash.test.ts",
+    "benchmark:cross-chat": "bun run benchmarks/cross-chat.ts",
+    "capture:browser": "bun run showcase/patch-wterm-cells.ts && OMS_CAPTURE_FEATURE=scope tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-browser.cast && bun run showcase/check-border-alignment.ts assets/ohmystash-browser.png && OMS_CAPTURE_FEATURE=search tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-search.cast && OMS_CAPTURE_FEATURE=queue-draft tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-queue-draft.cast && OMS_CAPTURE_FEATURE=submit-queue tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-submit-queue.cast && OMS_CAPTURE_FEATURE=attachments tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-attachments.cast && OMS_CAPTURE_FEATURE=editing tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-editing.cast && OMS_CAPTURE_FEATURE=locking-deletion tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-locking-deletion.cast",
+    "capture:settings": "bun run showcase/patch-wterm-cells.ts && tcut showcase/ohmystash-settings.video.ts --force",
+    "capture:all": "bun run capture:browser && bun run capture:settings"
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-ai": ">=17.4.0",
+    "@oh-my-pi/pi-coding-agent": ">=17.4.0",
+    "@oh-my-pi/pi-tui": ">=17.4.0"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-ai": "17.4.0",
+    "@oh-my-pi/pi-coding-agent": "17.4.0",
+    "@oh-my-pi/pi-tui": "17.4.0",
+    "@types/bun": "latest",
+    "termcut": "1.0.0",
+    "typescript": "latest"
+  },
+  "omp": {
+    "name": "OhMyStash",
+    "description": "OhMyStash (OMS) provides durable prompt storage, scoped browsing, search, editing, and queue restoration.",
+    "extensions": [
+      "./extensions/prompt-stash.ts"
+    ],
+    "settings": {
+      "Stash shortcut": {
+        "type": "string",
+        "default": "alt+s",
+        "description": "Stash the current prompt, or restore the latest prompt from this chat when the editor is empty. Enter none to disable it. Shortcut changes apply in a new OMP session."
+      },
+      "Browser shortcut": {
+        "type": "string",
+        "default": "alt+shift+s",
+        "description": "Open the saved-prompt browser. Enter none to disable it. Shortcut changes apply in a new OMP session."
+      },
+      "Editor command": {
+        "type": "string",
+        "default": "",
+        "description": "Command used by e to edit a stash, such as nvim or code --wait. Blank uses OMP's registered VISUAL/EDITOR command, then falls back to OMP's built-in multi-line editor."
+      },
+      "Browser layout": {
+        "type": "enum",
+        "values": [
+          "Automatic",
+          "Side by side",
+          "Stacked",
+          "Compact"
+        ],
+        "default": "Automatic",
+        "description": "Choose how saved prompts and previews are arranged. Automatic adapts to the terminal size."
+      },
+      "Maximum body rows": {
+        "type": "number",
+        "default": 36,
+        "min": 6,
+        "max": 72,
+        "step": 1,
+        "description": "Limit the height of the prompt list and preview area. The default is twice the original browser height."
+      },
+      "Time format": {
+        "type": "enum",
+        "values": [
+          "12-hour clock",
+          "24-hour clock"
+        ],
+        "default": "12-hour clock",
+        "description": "Choose how exact stash timestamps appear in previews and notifications."
+      },
+      "Retention days": {
+        "type": "number",
+        "default": 0,
+        "min": 0,
+        "max": 3650,
+        "step": 1,
+        "description": "Delete unlocked normal stashes older than this many days. Set 0 to keep them indefinitely. Locked, conflict, and recovery entries are never expired."
+      },
+      "Dim background": {
+        "type": "boolean",
+        "default": true,
+        "description": "Reduce the prominence of the OMP session behind the prompt browser."
+      },
+      "Background brightness (%)": {
+        "type": "number",
+        "default": 62,
+        "min": 30,
+        "max": 95,
+        "step": 5,
+        "description": "Set how much background brightness remains while the prompt browser is open."
+      },
+      "Background saturation (%)": {
+        "type": "number",
+        "default": 55,
+        "min": 0,
+        "max": 100,
+        "step": 5,
+        "description": "Set how much background color remains while the prompt browser is open."
+      },
+      "Show icons": {
+        "type": "boolean",
+        "default": true,
+        "description": "Use icons from the active OMP symbol theme in the prompt browser."
+      }
+    }
+  }
+}
