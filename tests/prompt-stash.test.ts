@@ -514,7 +514,7 @@ test("round-trips an OMP image plus a file-backed large paste and queues it with
     ui: {
       setEditorComponent(factory: Function) {
         editor = factory(
-          { enableScopedInputRender() {} },
+          {},
           editorTheme,
           {},
         );

@@ -1276,7 +1276,7 @@ function installEditorBridge(ctx: ExtensionContext): void {
   const sessionManager = ctx.sessionManager;
   ctx.ui.setEditorComponent((tui, theme, keybindings) => {
     const editor = new CustomEditor(tui, theme, keybindings);
-    tui.enableScopedInputRender(editor);
+    (tui as { enableScopedInputRender?: (component: unknown) => void })?.enableScopedInputRender?.(editor);
     ACTIVE_EDITORS.set(sessionManager, editor);
     return editor;
   });
