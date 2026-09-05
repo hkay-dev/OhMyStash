@@ -335,6 +335,71 @@ test("submits repeated Shift+Q actions as ordered slash queue commands", async (
 
   expect(browserCalls).toBe(3);
   expect(submissions).toEqual(["/queue test prompt", "/queue test prompt"]);
+
+  for (const text of ["unfinished draft", "/queue unfinished draft", ""]) {
+    const images = text ? [] : [{ type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" }];
+    editor.setDraft(text, images);
+    browserCalls = 0;
+    submissions.length = 0;
+    await stashCommand.handler("", context);
+    expect(editor.getExpandedText()).toBe(text);
+    expect(editor.pendingImages).toEqual(images);
+    expect(submissions).toEqual([]);
+  }
+  editor.clearDraft();
+});
+
+test("protects image-only drafts during restore and stashes them with Alt+S", async () => {
+  const sessionId = randomUUID();
+  const fixture = writeStashFixture("image-only restore target", { ...TEST_ORIGIN, sessionId });
+  let editor!: CustomEditor;
+  let action = "\r";
+  let calls = 0;
+  const images = [{ type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" }];
+  const context = {
+    cwd: agentDir, mode: "tui",
+    sessionManager: { ...TEST_SESSION_MANAGER, getSessionId: () => sessionId },
+    ui: {
+      setEditorComponent(factory: Function) {
+        editor = factory({}, { symbols: {}, borderColor: (text: string) => text }, {});
+      },
+      custom(factory: Function) {
+        const { promise, resolve } = Promise.withResolvers<unknown>();
+        const component = browserComponent(factory, resolve);
+        component.handleInput(calls++ === 0 ? action : "\u001b");
+        return promise;
+      },
+      getEditorText: () => editor.getText(),
+      notify() {},
+    },
+  } as unknown as ExtensionContext;
+  try {
+    await refreshConfig?.({}, context);
+    editor.setDraft("", images);
+    await stashCommand.handler("restore", context);
+    expect(editor.pendingImages).toEqual(images);
+    expect(editor.getExpandedText()).toBe("");
+    for (action of ["\r", "q"]) {
+      calls = 0;
+      await stashCommand.handler("", context);
+      expect(editor.pendingImages).toEqual(images);
+      expect(editor.getExpandedText()).toBe("");
+    }
+    await stashShortcut.handler(context);
+    expect(editor.pendingImages).toEqual([]);
+    const saved = readdirSync(join(agentDir, "prompt-stash"))
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => JSON.parse(readFileSync(join(agentDir, "prompt-stash", name), "utf8")))
+      .find((entry) => entry.origin?.sessionId === sessionId && entry.id !== fixture.id);
+    expect(saved?.attachments).toHaveLength(1);
+    expect(saved?.text).toBe("");
+  } finally {
+    for (const name of readdirSync(join(agentDir, "prompt-stash"))) {
+      if (!name.endsWith(".json")) continue;
+      const path = join(agentDir, "prompt-stash", name);
+      if (JSON.parse(readFileSync(path, "utf8")).origin?.sessionId === sessionId) rmSync(path);
+    }
+  }
 });
 
 test("search accepts d as query text until Tab selects the filtered result", async () => {
@@ -521,6 +586,7 @@ test("round-trips an OMP image plus a file-backed large paste and queues it with
         editor.onSubmit = (text: string) => {
           submittedQueuePrompts.push(text);
           submittedQueueImages.push(editor.pendingImages.map((image) => image.data));
+          editor.clearDraft();
         };
       },
       get theme() {
@@ -559,7 +625,7 @@ test("round-trips an OMP image plus a file-backed large paste and queues it with
   const largePaste = "large paste line\n".repeat(70_000);
   const originalText = `attachment [Image #1]\n${largePaste}`;
   editor.setText("attachment [Image #1]\n");
-  editor.pendingImages = [{ type: "image", data: imageData, mimeType: "image/png" }];
+  editor.pendingImages = [{ type: "image", data: imageData, mimeType: "image/png", detail: "original" }];
   editor.pendingImageLinks = [undefined];
   editor.insertPaste(largePaste);
 
@@ -584,13 +650,21 @@ test("round-trips an OMP image plus a file-backed large paste and queues it with
   ]);
   expect(attachmentEntry!.text).toStartWith("[Large pasted prompt");
 
+  let pasteMenuCalls = 0;
+  editor.onLargePaste = () => {
+    pasteMenuCalls += 1;
+    return true;
+  };
+
   browserCalls = 0;
   browserMode = "restore";
   await stashCommand.handler("", context);
 
+  expect(pasteMenuCalls).toBe(0);
   expect(editor.getExpandedText()).toBe(originalText);
   expect(editor.pendingImages).toHaveLength(1);
   expect(editor.pendingImages[0]?.data).toBe(imageData);
+  expect(editor.pendingImages[0]?.detail).toBe("original");
   const attachmentDir = join(agentDir, "prompt-stash", "attachments");
   const assetsBefore = readdirSync(attachmentDir).sort();
   await stashShortcut.handler(context);
@@ -605,6 +679,7 @@ test("round-trips an OMP image plus a file-backed large paste and queues it with
   expect(browserCalls).toBe(2);
   expect(submittedQueuePrompts).toEqual([`/queue ${originalText.trim()}`]);
   expect(submittedQueueImages).toEqual([[imageData]]);
+  expect(pasteMenuCalls).toBe(0);
   expect(
     readdirSync(join(agentDir, "prompt-stash")).filter((file) => file.endsWith(".json")),
   ).toHaveLength(stashFiles.length + 1);
@@ -701,6 +776,58 @@ test("editing a file-backed attachment stash preserves image refs and lock state
   }
 });
 
+test("rejects an edit that would exceed the attachment limit and keeps the saved entry", async () => {
+  const fixture = writeStashFixture("attachment limit edit");
+  const stored = JSON.parse(readFileSync(fixture.path, "utf8"));
+  stored.attachments = Array.from({ length: 64 }, () => ({
+    kind: "image", ref: `sha256:${"a".repeat(64)}`, byteLength: 1, mimeType: "image/png",
+  }));
+  const original = JSON.stringify(stored);
+  writeFileSync(fixture.path, original, { mode: 0o600 });
+  const previousVisual = process.env.VISUAL;
+  const previousEditor = process.env.EDITOR;
+  delete process.env.VISUAL;
+  delete process.env.EDITOR;
+  let calls = 0;
+  const notices: string[] = [];
+  const context = {
+    cwd: agentDir, mode: "tui", sessionManager: TEST_SESSION_MANAGER,
+    ui: {
+      custom(factory: Function) {
+        const { promise, resolve } = Promise.withResolvers<unknown>();
+        const component = browserComponent(factory, resolve);
+        if (calls++ === 0) {
+          component.handleInput("/");
+          component.handleInput("attachment limit edit");
+          component.handleInput("\t");
+          component.handleInput("e");
+        } else {
+          component.handleInput("\u001b");
+          component.handleInput("\u001b");
+        }
+        return promise;
+      },
+      editor: async () => "x".repeat(1024 * 1024 + 1),
+      getEditorText: () => "",
+      notify: (text: string) => notices.push(text),
+    },
+  } as unknown as ExtensionContext;
+  try {
+    await stashCommand.handler("", context);
+    expect(notices.at(-1)).toContain("at most 64 attachments");
+    expect(readFileSync(fixture.path, "utf8")).toBe(original);
+    notices.length = 0;
+    await stashCommand.handler("", context);
+    expect(notices).toEqual([]);
+  } finally {
+    rmSync(fixture.path);
+    if (previousVisual === undefined) delete process.env.VISUAL;
+    else process.env.VISUAL = previousVisual;
+    if (previousEditor === undefined) delete process.env.EDITOR;
+    else process.env.EDITOR = previousEditor;
+  }
+});
+
 test("recovers complete crash temps and quarantines incomplete bytes without discarding them", async () => {
   const stashDir = join(agentDir, "prompt-stash");
   const crashId = randomUUID();
@@ -753,6 +880,43 @@ test("recovers complete crash temps and quarantines incomplete bytes without dis
   expect(readdirSync(stashDir)).toContain(`${invalidName}.orphan`);
   expect(readFileSync(`${invalidPath}.orphan`, "utf8")).toBe(partial);
 });
+test("counts a cached stash once when its recovery file is also present", async () => {
+  const sessionId = randomUUID();
+  const fixture = writeStashFixture("cached recovery duplicate", { ...TEST_ORIGIN, sessionId });
+  const recoveryPath = join(agentDir, "prompt-stash", `.${fixture.id}.tmp`);
+  let requestDelete = false;
+  let confirmation = "";
+  const context = {
+    cwd: agentDir, mode: "tui",
+    sessionManager: { ...TEST_SESSION_MANAGER, getSessionId: () => sessionId },
+    ui: {
+      custom(factory: Function) {
+        const { promise, resolve } = Promise.withResolvers<unknown>();
+        const component = browserComponent(factory, resolve);
+        component.handleInput(requestDelete ? "D" : "\u001b");
+        requestDelete = false;
+        return promise;
+      },
+      confirm: async (_title: string, message: string) => {
+        confirmation = message;
+        return false;
+      },
+      getEditorText: () => "",
+      notify() {},
+    },
+  } as unknown as ExtensionContext;
+  try {
+    await stashCommand.handler("", context);
+    writeFileSync(recoveryPath, readFileSync(fixture.path), { mode: 0o600 });
+    requestDelete = true;
+    await stashCommand.handler("", context);
+    expect(confirmation).toStartWith("Permanently delete 1 unlocked stashed prompt ");
+  } finally {
+    rmSync(fixture.path);
+    rmSync(recoveryPath, { force: true });
+  }
+});
+
 test("never deletes another writer's replacement temp after an edit collision", async () => {
   const previousVisual = process.env.VISUAL;
   const previousEditor = process.env.EDITOR;
@@ -897,6 +1061,62 @@ test("preserves both results when concurrent editors start from one stash revisi
       concurrentEntries.every((entry) => entry.origin?.sessionId === TEST_SESSION_ID),
     ).toBeTrue();
   } finally {
+    if (previousVisual === undefined) delete process.env.VISUAL;
+    else process.env.VISUAL = previousVisual;
+    if (previousEditor === undefined) delete process.env.EDITOR;
+    else process.env.EDITOR = previousEditor;
+  }
+});
+
+test.each(["e", "l"])("keeps a newly published stash when applying %s to an older recovery file", async (action) => {
+  const sessionId = randomUUID();
+  const fixture = writeStashFixture("recovery publication race", { ...TEST_ORIGIN, sessionId });
+  const original = JSON.parse(readFileSync(fixture.path, "utf8"));
+  const recoveryPath = join(agentDir, "prompt-stash", `.${fixture.id}.tmp`);
+  writeFileSync(recoveryPath, JSON.stringify(original), { mode: 0o600 });
+  rmSync(fixture.path);
+  const previousVisual = process.env.VISUAL;
+  const previousEditor = process.env.EDITOR;
+  delete process.env.VISUAL;
+  delete process.env.EDITOR;
+  let calls = 0;
+  const context = {
+    cwd: agentDir, mode: "tui",
+    sessionManager: { ...TEST_SESSION_MANAGER, getSessionId: () => sessionId },
+    ui: {
+      custom(factory: Function) {
+        const { promise, resolve } = Promise.withResolvers<unknown>();
+        const component = browserComponent(factory, resolve);
+        if (calls === 0 && action === "l") {
+          writeFileSync(fixture.path, JSON.stringify({ ...original, text: "newly published", locked: true }), { mode: 0o600 });
+        }
+        component.handleInput(calls++ === 0 ? action : "\u001b");
+        return promise;
+      },
+      editor: async () => {
+        writeFileSync(fixture.path, JSON.stringify({ ...original, text: "newly published", locked: true }), { mode: 0o600 });
+        return "edited recovery";
+      },
+      getEditorText: () => "",
+      notify() {},
+    },
+  } as unknown as ExtensionContext;
+  try {
+    await stashCommand.handler("", context);
+    const published = JSON.parse(readFileSync(fixture.path, "utf8"));
+    expect(published.text).toBe("newly published");
+    expect(published.locked).toBeTrue();
+    const saved = readdirSync(join(agentDir, "prompt-stash"))
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => JSON.parse(readFileSync(join(agentDir, "prompt-stash", name), "utf8")));
+    expect(saved.some((entry) => entry.origin?.sessionId === sessionId && entry.text === "edited recovery")).toBe(action === "e");
+  } finally {
+    rmSync(recoveryPath, { force: true });
+    for (const name of readdirSync(join(agentDir, "prompt-stash"))) {
+      if (!name.endsWith(".json")) continue;
+      const path = join(agentDir, "prompt-stash", name);
+      if (JSON.parse(readFileSync(path, "utf8")).origin?.sessionId === sessionId) rmSync(path);
+    }
     if (previousVisual === undefined) delete process.env.VISUAL;
     else process.env.VISUAL = previousVisual;
     if (previousEditor === undefined) delete process.env.EDITOR;

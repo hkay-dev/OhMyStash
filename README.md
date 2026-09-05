@@ -26,6 +26,8 @@ omp plugin install github:hkay-dev/OhMyStash
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
+Version 1.8.4 has been checked against OMP 18.1.11.
+
 To update OhMyStash after a new release:
 
 ```sh
@@ -85,6 +87,8 @@ Regular `q` comes first. It puts the stash into the composer as an editable `/qu
 ### Submit queue
 
 `Shift+Q` prepends `/queue `, submits the stash immediately, and keeps the browser open. Repeat it to stack messages in OMP's queue, then press `Esc` to exit.
+
+Stash or clear any draft in the composer before restoring or submitting a saved prompt. This includes drafts that contain only images.
 
 ![OhMyStash submitted queue message](assets/ohmystash-feature-submit-queue.gif)
 

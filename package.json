@@ -1,6 +1,6 @@
 {
   "name": "@hkay-dev/ohmystash",
-  "version": "1.8.3",
+  "version": "1.8.4",
   "private": true,
   "type": "module",
   "description": "OhMyStash (OMS), a durable chat-scoped and global prompt manager for Oh My Pi.",
@@ -22,9 +22,9 @@
     "@oh-my-pi/pi-tui": ">=17.4.0"
   },
   "devDependencies": {
-    "@oh-my-pi/pi-ai": "17.4.0",
-    "@oh-my-pi/pi-coding-agent": "17.4.0",
-    "@oh-my-pi/pi-tui": "17.4.0",
+    "@oh-my-pi/pi-ai": "18.1.11",
+    "@oh-my-pi/pi-coding-agent": "18.1.11",
+    "@oh-my-pi/pi-tui": "18.1.11",
     "@types/bun": "latest",
     "termcut": "1.0.0",
     "typescript": "latest"

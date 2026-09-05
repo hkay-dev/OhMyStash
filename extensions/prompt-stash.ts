@@ -69,6 +69,7 @@ type StoredImageAttachment = {
   ref: string;
   byteLength: number;
   mimeType: string;
+  detail?: ImageContent["detail"];
 };
 
 type StoredTextAttachment = {
@@ -516,11 +517,17 @@ function parseAttachments(value: unknown): StoredAttachment[] | undefined {
       if (
         typeof raw.mimeType !== "string" ||
         !raw.mimeType.startsWith("image/") ||
-        raw.mimeType.length > 128
+        raw.mimeType.length > 128 ||
+        (raw.detail !== undefined &&
+          raw.detail !== "auto" && raw.detail !== "low" &&
+          raw.detail !== "high" && raw.detail !== "original")
       ) {
         return undefined;
       }
-      attachments.push({ kind: "image", ref, byteLength, mimeType: raw.mimeType });
+      attachments.push({
+        kind: "image", ref, byteLength, mimeType: raw.mimeType,
+        ...(raw.detail === undefined ? {} : { detail: raw.detail }),
+      });
       continue;
     }
     if (
@@ -766,6 +773,10 @@ function loadEntries(): LoadResult {
       const fingerprint = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.mode}:${stat.uid}:${pluginConfig.timeFormat}`;
       const cached = recoveryFile ? undefined : ENTRY_CACHE.get(fileName);
       if (cached?.fingerprint === fingerprint) {
+        if (seenIds?.has(cached.entry.id)) {
+          continue;
+        }
+        seenIds?.add(cached.entry.id);
         entries.push(cached.entry);
         continue;
       }
@@ -780,12 +791,12 @@ function loadEntries(): LoadResult {
       if (
         persisted === undefined ||
         (STALE_TEMP.test(fileName) && fileName !== `.${persisted.id}.tmp`) ||
-        (preservedFile && !persisted.preserved) ||
-        seenIds?.has(persisted.id)
+        (preservedFile && !persisted.preserved)
       ) {
         skipped += 1;
         continue;
       }
+      if (seenIds?.has(persisted.id)) continue;
       seenIds?.add(persisted.id);
       const displayTimestamp = localTimestamp(persisted.stashedAt);
       const displayOrigin = stashOriginLabel(persisted.origin);
@@ -925,9 +936,14 @@ function replaceEntry(
   const sourcePath = join(dir, basename(entry.fileName));
   if (STALE_TEMP.test(entry.fileName)) {
     try {
-      renameSync(sourcePath, finalPath);
+      // Publish recovery only if no other writer has published this stash.
+      linkSync(sourcePath, finalPath);
+      unlinkSync(sourcePath);
       syncDirectory(dir);
     } catch (error) {
+      if (errorCode(error) === "EEXIST") {
+        throw new EntryConflictError("Stash was published while its recovery file was being edited");
+      }
       if (errorCode(error) !== "ENOENT") throw error;
     }
   }
@@ -996,6 +1012,9 @@ function setEntryText(entry: StashEntry, editedText: string): "updated" | "confl
   let text = editedText;
   let attachments: StoredAttachment[] = images;
   if (textBytes > MAX_PROMPT_BYTES) {
+    if (images.length >= MAX_ATTACHMENTS) {
+      throw new Error(`An OMS entry can contain at most ${MAX_ATTACHMENTS} attachments, including the large text body`);
+    }
     if (
       textBytes > MAX_ATTACHMENT_BYTES ||
       imageBytes + textBytes > MAX_ENTRY_ATTACHMENT_BYTES
@@ -1271,6 +1290,13 @@ function activeEditor(ctx: ExtensionContext): CustomEditor | undefined {
   return ACTIVE_EDITORS.get(ctx.sessionManager);
 }
 
+function hasEditorContent(ctx: ExtensionContext): boolean {
+  return (
+    parseEditorDraft(ctx.ui.getEditorText()).text.length > 0 ||
+    (activeEditor(ctx)?.pendingImages.length ?? 0) > 0
+  );
+}
+
 function installEditorBridge(ctx: ExtensionContext): void {
   if (ctx.mode !== "tui") return;
   const sessionManager = ctx.sessionManager;
@@ -1311,6 +1337,7 @@ function captureDraft(ctx: ExtensionContext): CapturedDraft {
       ref,
       byteLength: data.byteLength,
       mimeType: image.mimeType,
+      ...(image.detail === undefined ? {} : { detail: image.detail }),
     });
   }
   const textBytes = Buffer.byteLength(expandedDraft.text, "utf8");
@@ -1346,7 +1373,10 @@ function resolveEntryAttachments(entry: StashEntry) {
   for (const attachment of entry.attachments) {
     const data = readAsset(attachment.ref, attachment.byteLength);
     if (attachment.kind === "image") {
-      images.push({ type: "image", data: data.toString("base64"), mimeType: attachment.mimeType });
+      images.push({
+        type: "image", data: data.toString("base64"), mimeType: attachment.mimeType,
+        ...(attachment.detail === undefined ? {} : { detail: attachment.detail }),
+      });
       imageLinks.push(pathToFileURL(attachmentDisplayPath(attachment)).href);
     } else {
       if (body !== undefined) throw new Error("OMS entry contains multiple large text bodies");
@@ -1372,19 +1402,24 @@ function setEditorDraft(ctx: ExtensionContext, entry: StashEntry, forceQueue = f
     editor.setDraft(prefix, resolved.images);
     editor.pendingImageLinks = resolved.imageLinks;
     editor.imageLinks = resolved.imageLinks;
-    ctx.ui.pasteToEditor(text);
+    // Restore saved content synchronously; terminal paste can open an async menu.
+    editor.insertPaste(text);
   } else {
     editor.setDraft(`${prefix}${text}`, resolved.images);
     editor.pendingImageLinks = resolved.imageLinks;
     editor.imageLinks = resolved.imageLinks;
-    editor.tui?.requestRender();
   }
+  editor.tui?.requestRender();
 }
 
 function submitQueuedEntry(ctx: ExtensionContext, entry: StashEntry): void {
   const editor = activeEditor(ctx);
   if (!editor) {
     throw new Error("Restart OMP once so OhMyStash can submit queued stashes");
+  }
+  if (hasEditorContent(ctx)) {
+    ctx.ui.notify("Stash or clear the current editor before submitting a queued stash", "warning");
+    return;
   }
   setEditorDraft(ctx, entry, true);
   editor.handleInput("\r");
@@ -2145,7 +2180,7 @@ async function stashCurrent(ctx: ExtensionContext): Promise<void> {
 async function restoreLatest(ctx: ExtensionContext, requestedMode?: InputMode): Promise<void> {
   if (ctx.mode !== "tui") return;
   const current = parseEditorDraft(ctx.ui.getEditorText());
-  if (current.text.length > 0) {
+  if (hasEditorContent(ctx)) {
     ctx.ui.notify("Stash or clear the current editor before restoring a prompt", "warning");
     return;
   }
@@ -2174,7 +2209,7 @@ async function restoreLatest(ctx: ExtensionContext, requestedMode?: InputMode): 
 
 async function toggleStash(ctx: ExtensionContext): Promise<void> {
   const draft = parseEditorDraft(ctx.ui.getEditorText());
-  if (draft.text.length > 0) {
+  if (hasEditorContent(ctx)) {
     await stashCurrent(ctx);
     return;
   }
@@ -2257,8 +2292,7 @@ async function browse(ctx: ExtensionContext): Promise<void> {
       );
       continue;
     }
-    const current = parseEditorDraft(ctx.ui.getEditorText());
-    if (current.text.length > 0) {
+    if (hasEditorContent(ctx)) {
       ctx.ui.notify("Stash or clear the current editor before restoring a prompt", "warning");
       continue;
     }
