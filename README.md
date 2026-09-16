@@ -26,7 +26,7 @@ omp plugin install github:hkay-dev/OhMyStash
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
-Version 1.8.4 has been checked against OMP 18.1.11.
+Version 1.8.5 has been checked against OMP 18.2.1.
 
 To update OhMyStash after a new release:
 
