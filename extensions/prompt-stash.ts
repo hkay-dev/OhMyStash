@@ -26,7 +26,6 @@ import {
 } from "@oh-my-pi/pi-coding-agent";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components";
-import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-coding-agent/session/blob-store";
 import { getEditorCommand, openInEditor } from "@oh-my-pi/pi-coding-agent/utils/external-editor";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
@@ -40,6 +39,7 @@ import {
   type KeyId,
   type TUI,
 } from "@oh-my-pi/pi-tui";
+import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
 
 type InputMode = "normal" | "queue";
 
