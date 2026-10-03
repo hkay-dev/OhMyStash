@@ -40,6 +40,12 @@ import {
   type TUI,
 } from "@oh-my-pi/pi-tui";
 import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
+import {
+  hasPrivateStoragePermissions,
+  invalidatePrivateStoragePermission,
+  preparePrivateStorageDirectory,
+  withPrivateStoragePermissions,
+} from "./storage-permissions";
 
 type InputMode = "normal" | "queue";
 
@@ -282,6 +288,8 @@ function stashDir(): string {
 }
 
 function syncDirectory(path: string): void {
+  // Windows doesn't support fsync on directory handles; file fsync still runs.
+  if (process.platform === "win32") return;
   const fd = openSync(path, constants.O_RDONLY);
   try {
     fsyncSync(fd);
@@ -306,15 +314,15 @@ function checkedStashDir(create: boolean): string {
   const created = create ? mkdirSync(dir, { recursive: true, mode: 0o700 }) : undefined;
   if (created !== undefined) syncCreatedDirectoryParents(created, dir);
   const stat = lstatSync(dir);
-  const uid = process.getuid?.();
   if (
     stat.isSymbolicLink() ||
     !stat.isDirectory() ||
-    (uid !== undefined && stat.uid !== uid) ||
-    (stat.mode & 0o077) !== 0
+    (process.platform !== "win32" && !hasPrivateStoragePermissions(dir, stat))
   ) {
     throw new Error("OMS storage directory must be an owner-only real directory");
   }
+  // Preparation validates native Windows ACLs; POSIX permissions were checked above.
+  preparePrivateStorageDirectory(dir);
   return dir;
 }
 
@@ -324,15 +332,14 @@ function checkedAttachmentDir(create: boolean): string {
   const created = create ? mkdirSync(dir, { recursive: true, mode: 0o700 }) : undefined;
   if (created !== undefined) syncDirectory(root);
   const stat = lstatSync(dir);
-  const uid = process.getuid?.();
   if (
     stat.isSymbolicLink() ||
     !stat.isDirectory() ||
-    (uid !== undefined && stat.uid !== uid) ||
-    (stat.mode & 0o077) !== 0
+    (process.platform !== "win32" && !hasPrivateStoragePermissions(dir, stat))
   ) {
     throw new Error("OMS attachment directory must be an owner-only real directory");
   }
+  preparePrivateStorageDirectory(dir);
   return dir;
 }
 
@@ -351,12 +358,10 @@ function readAsset(ref: string, byteLength: number): Buffer {
   }
   const path = assetPath(ref);
   const stat = lstatSync(path);
-  const uid = process.getuid?.();
   if (
     stat.isSymbolicLink() ||
     !stat.isFile() ||
-    (uid !== undefined && stat.uid !== uid) ||
-    (stat.mode & 0o077) !== 0 ||
+    !hasPrivateStoragePermissions(path, stat) ||
     stat.size !== byteLength
   ) {
     throw new Error("OMS attachment is not a private regular file of the expected size");
@@ -383,6 +388,7 @@ function persistAsset(data: Buffer, extension?: string): string {
     if (displayPath !== finalPath) {
       try {
         linkSync(finalPath, displayPath);
+        invalidatePrivateStoragePermission(finalPath);
         syncDirectory(dir);
       } catch (error) {
         if (errorCode(error) !== "EEXIST") throw error;
@@ -413,6 +419,7 @@ function persistAsset(data: Buffer, extension?: string): string {
     if (displayPath !== finalPath) {
       try {
         linkSync(finalPath, displayPath);
+        invalidatePrivateStoragePermission(finalPath);
       } catch (error) {
         if (errorCode(error) !== "EEXIST") throw error;
       }
@@ -646,7 +653,7 @@ function parsePersistedEntry(text: string): PersistedEntry | undefined {
   }
 }
 
-function isRecoverableTemp(path: string, uid: number | undefined): boolean {
+function isRecoverableTemp(path: string): boolean {
   let fd: number | undefined;
   try {
     fd = openSync(
@@ -656,8 +663,7 @@ function isRecoverableTemp(path: string, uid: number | undefined): boolean {
     const stat = fstatSync(fd);
     if (
       !stat.isFile() ||
-      (uid !== undefined && stat.uid !== uid) ||
-      (stat.mode & 0o077) !== 0 ||
+      !hasPrivateStoragePermissions(path, stat) ||
       stat.size <= 0 ||
       stat.size > MAX_ENTRY_FILE_BYTES
     ) {
@@ -676,36 +682,36 @@ function isRecoverableTemp(path: string, uid: number | undefined): boolean {
 }
 
 function cleanupStaleTemps(dir: string): void {
-  const cutoff = Date.now() - STALE_TEMP_MS;
-  const uid = process.getuid?.();
-  let changed = false;
-  const handle = opendirSync(dir);
-  try {
-    for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
-      if (!STALE_TEMP.test(entry.name)) continue;
-      const path = join(dir, basename(entry.name));
-      try {
-        const stat = lstatSync(path);
-        if (
-          stat.isSymbolicLink() ||
-          !stat.isFile() ||
-          (uid !== undefined && stat.uid !== uid) ||
-          (stat.mode & 0o077) !== 0 ||
-          stat.mtimeMs > cutoff ||
-          isRecoverableTemp(path, uid)
-        ) {
-          continue;
+  withPrivateStoragePermissions(dir, () => {
+    const cutoff = Date.now() - STALE_TEMP_MS;
+    let changed = false;
+    const handle = opendirSync(dir);
+    try {
+      for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+        if (!STALE_TEMP.test(entry.name)) continue;
+        const path = join(dir, basename(entry.name));
+        try {
+          const stat = lstatSync(path);
+          if (
+            stat.isSymbolicLink() ||
+            !stat.isFile() ||
+            !hasPrivateStoragePermissions(path, stat) ||
+            stat.mtimeMs > cutoff ||
+            isRecoverableTemp(path)
+          ) {
+            continue;
+          }
+          renameSync(path, `${path}.orphan`);
+          changed = true;
+        } catch (error) {
+          if (errorCode(error) !== "ENOENT") continue;
         }
-        renameSync(path, `${path}.orphan`);
-        changed = true;
-      } catch (error) {
-        if (errorCode(error) !== "ENOENT") continue;
       }
+    } finally {
+      handle.closeSync();
     }
-  } finally {
-    handle.closeSync();
-  }
-  if (changed) syncDirectory(dir);
+    if (changed) syncDirectory(dir);
+  });
 }
 
 function storageUsage(dir: string) {
@@ -737,13 +743,16 @@ function loadEntries(): LoadResult {
     if (errorCode(error) === "ENOENT") return { entries: [], skipped: 0 };
     throw error;
   }
+  return withPrivateStoragePermissions(dir, () => loadEntriesInDirectory(dir));
+}
+
+function loadEntriesInDirectory(dir: string): LoadResult {
 
   const selection = newestCandidateNames(dir);
   const names = selection.names;
   const entries: StashEntry[] = [];
   let skipped = selection.skipped;
   let totalBytes = 0;
-  const uid = process.getuid?.();
   const seenIds = selection.tempCount > 0 ? new Set<string>() : undefined;
 
   for (const fileName of names) {
@@ -760,8 +769,7 @@ function loadEntries(): LoadResult {
       const overflowProtected = preservedFile || recoveryFile;
       if (
         !stat.isFile() ||
-        (uid !== undefined && stat.uid !== uid) ||
-        (stat.mode & 0o077) !== 0 ||
+        !hasPrivateStoragePermissions(path, stat) ||
         stat.size <= 0 ||
         stat.size > MAX_ENTRY_FILE_BYTES ||
         (!overflowProtected && totalBytes + stat.size > MAX_TOTAL_BYTES)
@@ -1056,12 +1064,10 @@ function removeEntry(entry: StashEntry, sync = true): boolean {
     }
     throw error;
   }
-  const uid = process.getuid?.();
   if (
     stat.isSymbolicLink() ||
     !stat.isFile() ||
-    (uid !== undefined && stat.uid !== uid) ||
-    (stat.mode & 0o077) !== 0
+    !hasPrivateStoragePermissions(path, stat)
   ) {
     throw new Error("Selected OMS entry is not a private regular file");
   }
@@ -1089,15 +1095,17 @@ function removeEntry(entry: StashEntry, sync = true): boolean {
 
 function removeEntries(entries: StashEntry[]): number {
   const dir = checkedStashDir(false);
-  let deleted = 0;
-  try {
-    for (const entry of entries) {
-      if (removeEntry(entry, false)) deleted += 1;
+  return withPrivateStoragePermissions(dir, () => {
+    let deleted = 0;
+    try {
+      for (const entry of entries) {
+        if (removeEntry(entry, false)) deleted += 1;
+      }
+    } finally {
+      syncDirectory(dir);
     }
-  } finally {
-    syncDirectory(dir);
-  }
-  return deleted;
+    return deleted;
+  });
 }
 
 function pruneExpiredEntries(entries: StashEntry[]): StashEntry[] {
@@ -1322,6 +1330,14 @@ function captureDraft(ctx: ExtensionContext): CapturedDraft {
   if (images.length > MAX_ATTACHMENTS) {
     throw new Error(`An OMS entry can contain at most ${MAX_ATTACHMENTS} attachments`);
   }
+  if (images.length === 0 && Buffer.byteLength(expandedDraft.text, "utf8") <= MAX_PROMPT_BYTES) {
+    return { ...expandedDraft, attachments: [] };
+  }
+  checkedAttachmentDir(true);
+  return withPrivateStoragePermissions(stashDir(), () => persistDraftAttachments(expandedDraft, images));
+}
+
+function persistDraftAttachments(expandedDraft: EditorDraft, images: ImageContent[]): CapturedDraft {
   let attachmentBytes = 0;
   const attachments: StoredAttachment[] = [];
   for (const image of images) {
@@ -1367,6 +1383,12 @@ function captureDraft(ctx: ExtensionContext): CapturedDraft {
 }
 
 function resolveEntryAttachments(entry: StashEntry) {
+  if (entry.attachments.length === 0) return { body: undefined, images: [], imageLinks: [] };
+  const root = checkedStashDir(false);
+  return withPrivateStoragePermissions(root, () => resolveStoredAttachments(entry));
+}
+
+function resolveStoredAttachments(entry: StashEntry) {
   let body: string | undefined;
   const images: ImageContent[] = [];
   const imageLinks: string[] = [];

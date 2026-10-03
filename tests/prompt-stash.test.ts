@@ -6,7 +6,10 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
+  symlinkSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -65,13 +68,18 @@ function writeSettings(settings: Record<string, unknown>): void {
 }
 let fixtureClock = Date.now() + 60_000;
 
+function nextFixtureTime(): string {
+  fixtureClock = Math.max(fixtureClock + 1, Date.now() + 60_000);
+  return new Date(fixtureClock).toISOString();
+}
+
 function writeStashFixture(
   text: string,
   origin: unknown = TEST_ORIGIN,
   inputMode: "normal" | "queue" = "normal",
 ) {
   const id = randomUUID();
-  const stashedAt = new Date(fixtureClock += 1).toISOString();
+  const stashedAt = nextFixtureTime();
   const path = join(
     agentDir,
     "prompt-stash",
@@ -137,6 +145,33 @@ beforeAll(async () => {
 });
 
 afterAll(() => rmSync(agentDir, { recursive: true, force: true }));
+
+test("rejects linked storage directories on every platform", async () => {
+  const dir = join(agentDir, "prompt-stash");
+  const original = `${dir}-original`;
+  const notifications: string[] = [];
+  const context = {
+    cwd: agentDir,
+    mode: "tui",
+    sessionManager: TEST_SESSION_MANAGER,
+    ui: {
+      custom() { throw new Error("Linked storage reached the browser"); },
+      getEditorText: () => "",
+      notify(message: string) { notifications.push(message); },
+    },
+  } as unknown as ExtensionContext;
+  renameSync(dir, original);
+  try {
+    symlinkSync(original, dir, process.platform === "win32" ? "junction" : "dir");
+    await stashCommand.handler("", context);
+    expect(notifications).toEqual([
+      "OMS failed: OMS storage directory must be an owner-only real directory",
+    ]);
+  } finally {
+    if (existsSync(dir)) unlinkSync(dir);
+    renameSync(original, dir);
+  }
+});
 
 test("restores the terminal writer when browser setup throws", async () => {
   for (const failure of ["custom", "render"] as const) {
@@ -349,13 +384,15 @@ test("submits repeated Shift+Q actions as ordered slash queue commands", async (
   editor.clearDraft();
 });
 
-test("protects image-only drafts during restore and stashes them with Alt+S", async () => {
+test("protects image-only drafts and round-trips 64 repeated images", async () => {
   const sessionId = randomUUID();
   const fixture = writeStashFixture("image-only restore target", { ...TEST_ORIGIN, sessionId });
   let editor!: CustomEditor;
   let action = "\r";
   let calls = 0;
-  const images = [{ type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" }];
+  const images = Array.from({ length: 64 }, () => ({
+    type: "image" as const, data: "aGVsbG8=", mimeType: "image/png",
+  }));
   const context = {
     cwd: agentDir, mode: "tui",
     sessionManager: { ...TEST_SESSION_MANAGER, getSessionId: () => sessionId },
@@ -391,8 +428,20 @@ test("protects image-only drafts during restore and stashes them with Alt+S", as
       .filter((name) => name.endsWith(".json"))
       .map((name) => JSON.parse(readFileSync(join(agentDir, "prompt-stash", name), "utf8")))
       .find((entry) => entry.origin?.sessionId === sessionId && entry.id !== fixture.id);
-    expect(saved?.attachments).toHaveLength(1);
+    expect(saved?.attachments).toHaveLength(64);
     expect(saved?.text).toBe("");
+    rmSync(fixture.path);
+    await stashCommand.handler("restore", context);
+    expect(editor.pendingImages).toEqual(images);
+    expect(editor.getExpandedText()).toBe("");
+
+    // Recreating a missing display alias must not reject the next duplicate image.
+    const hash = saved.attachments[0].ref.slice("sha256:".length);
+    unlinkSync(join(agentDir, "prompt-stash", "attachments", `${hash}.png`));
+    await stashShortcut.handler(context);
+    expect(editor.pendingImages).toEqual([]);
+    await stashCommand.handler("restore", context);
+    expect(editor.pendingImages).toEqual(images);
   } finally {
     for (const name of readdirSync(join(agentDir, "prompt-stash"))) {
       if (!name.endsWith(".json")) continue;
@@ -831,7 +880,7 @@ test("rejects an edit that would exceed the attachment limit and keeps the saved
 test("recovers complete crash temps and quarantines incomplete bytes without discarding them", async () => {
   const stashDir = join(agentDir, "prompt-stash");
   const crashId = randomUUID();
-  const crashTime = new Date(Date.now() + 5_000).toISOString();
+  const crashTime = nextFixtureTime();
   const crashName = `.${crashId}.tmp`;
   const crashPath = join(stashDir, crashName);
   writeFileSync(
@@ -1131,7 +1180,7 @@ test("preserves concurrent edits that begin from one recoverable temp", async ()
   delete process.env.EDITOR;
   const stashDir = join(agentDir, "prompt-stash");
   const id = randomUUID();
-  const stashedAt = new Date(Date.now() + 20_000).toISOString();
+  const stashedAt = nextFixtureTime();
   writeFileSync(
     join(stashDir, `.${id}.tmp`),
     `${JSON.stringify({
@@ -1690,10 +1739,12 @@ test("keeps quota-preserved conflict copies visible in the browser", async () =>
       notify() {},
     },
   } as unknown as ExtensionContext;
-  for (let index = 0; index < 256; index += 1) {
-    editorText = `quota visibility prompt ${index}`;
-    await stashShortcut.handler(saveContext);
+  for (let index = 0; index < 255; index += 1) {
+    writeStashFixture(`quota visibility prompt ${index}`);
   }
+  editorText = "quota visibility prompt 255";
+  await stashShortcut.handler(saveContext);
+  expect(editorText).toBe("");
 
   let browserCalls = 0;
   let reopenedFrame = "";
@@ -1770,7 +1821,7 @@ test("keeps quota-preserved conflict copies visible in the browser", async () =>
 test("keeps preserved crash-recovery temps visible beyond the normal quota", async () => {
   const stashDir = join(agentDir, "prompt-stash");
   const id = randomUUID();
-  const stashedAt = new Date(Date.now() + 10_000).toISOString();
+  const stashedAt = nextFixtureTime();
   writeFileSync(
     join(stashDir, `.${id}.tmp`),
     `${JSON.stringify({
@@ -1821,7 +1872,7 @@ test("keeps every recoverable temp visible beyond the recovery-window size", asy
   ).length;
   for (let index = 0; index < 257; index += 1) {
     const id = randomUUID();
-    const stashedAt = new Date(Date.now() + 20_000 + index).toISOString();
+    const stashedAt = nextFixtureTime();
     writeFileSync(
       join(stashDir, `.${id}.tmp`),
       `${JSON.stringify({
