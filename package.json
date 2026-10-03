@@ -1,6 +1,6 @@
 {
   "name": "@hkay-dev/ohmystash",
-  "version": "1.8.7",
+  "version": "1.8.8",
   "private": true,
   "type": "module",
   "description": "OhMyStash (OMS), a durable chat-scoped and global prompt manager for Oh My Pi.",
