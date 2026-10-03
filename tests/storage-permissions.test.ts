@@ -321,6 +321,7 @@ interface AclFixtureReply {
   protected: boolean;
   rules: { sid: string; inherited: boolean; allow: boolean }[];
   sddl: string;
+  shortPath?: string;
 }
 
 function windowsAcl(action: string, path: string): AclFixtureReply {
@@ -608,6 +609,36 @@ windowsTest("Windows scopes refresh existing canonical grants after intentional 
       expect(permissions.hasPrivateStoragePermissions(display, lstatSync(display))).toBe(true);
     }
   });
+}, 60_000);
+
+windowsTest("Windows short-path spellings preserve prepare, reads, and batch hardlink validation", () => {
+  const { root, file } = fixture("short-path-storage-long-directory");
+  const attachments = join(root, "attachments");
+  mkdirSync(attachments);
+  const canonical = join(attachments, "canonical");
+  const display = `${canonical}.png`;
+  writeFileSync(canonical, "short-path attachment");
+  linkSync(canonical, display);
+  const short = windowsAcl("short-path", root);
+  if (!short.supported) return;
+  if (!short.shortPath) throw new Error("Short-path fixture did not return a path");
+  const shortRoot = short.shortPath;
+  const shortFile = join(shortRoot, "stash.json");
+  const shortCanonical = join(shortRoot, "attachments", "canonical");
+  const shortDisplay = `${shortCanonical}.png`;
+  expect(lstatSync(shortRoot).ino).toBe(lstatSync(root).ino);
+  const permissions = createStoragePermissions();
+  permissions.preparePrivateStorageDirectory(shortRoot);
+  expect(permissions.hasPrivateStoragePermissions(shortFile, lstatSync(shortFile))).toBe(true);
+  expect(permissions.hasPrivateStoragePermissions(shortCanonical, lstatSync(shortCanonical))).toBe(true);
+  permissions.withPrivateStoragePermissions(shortRoot, () => {
+    permissions.preparePrivateStorageDirectory(shortRoot);
+    expect(permissions.hasPrivateStoragePermissions(shortFile, lstatSync(shortFile))).toBe(true);
+    expect(permissions.hasPrivateStoragePermissions(shortCanonical, lstatSync(shortCanonical))).toBe(true);
+    expect(permissions.hasPrivateStoragePermissions(shortDisplay, lstatSync(shortDisplay))).toBe(true);
+  });
+  expect(readFileSync(shortFile)).toEqual(readFileSync(file));
+  expect(readFileSync(shortDisplay, "utf8")).toBe("short-path attachment");
 }, 60_000);
 
 test("a scoped directory replacement cannot reuse the old directory's ACL grant", () => {

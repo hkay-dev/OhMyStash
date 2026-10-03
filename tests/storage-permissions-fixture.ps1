@@ -7,7 +7,31 @@ $user = $identity.User
 $item = Get-Item -Force -LiteralPath ([string]$request.path)
 $acl = Get-Acl -LiteralPath $item.FullName
 
-if ($request.action -eq 'case-sensitive') {
+if ($request.action -eq 'short-path') {
+    $source = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class AclFixtureShortPath {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetShortPathName(string path, StringBuilder text, uint length);
+    public static string Get(string path) {
+        StringBuilder text = new StringBuilder(32768);
+        uint length = GetShortPathName(path, text, (uint)text.Capacity);
+        if (length == 0 || length >= text.Capacity) throw new Win32Exception();
+        return text.ToString();
+    }
+}
+'@
+    Add-Type -TypeDefinition $source -Language CSharp
+    $short = [AclFixtureShortPath]::Get($item.FullName)
+    [Console]::WriteLine(([pscustomobject]@{
+        supported = -not [string]::Equals($short, $item.FullName, [StringComparison]::OrdinalIgnoreCase)
+        shortPath = $short
+    } | ConvertTo-Json -Compress))
+    exit 0
+} elseif ($request.action -eq 'case-sensitive') {
     $tool = Join-Path $env:SystemRoot 'System32/fsutil.exe'
     $ErrorActionPreference = 'Continue'
     & $tool file setCaseSensitiveInfo $item.FullName enable *> $null

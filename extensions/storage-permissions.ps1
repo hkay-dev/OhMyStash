@@ -407,6 +407,21 @@ public static class StorageAclNative
                 records.Add(Record(path, Information(handle), safe));
                 if (safe && (action == "prepare" || action == "tree"))
                     Walk(path, privateRoot, rootIdentity.Value, migrate, records);
+                // GetFullPath can expand 8.3 names. Keep the validated internal
+                // paths for all security checks, then restore the caller's root
+                // spelling only in the reply that indexes its JavaScript snapshot.
+                string requestedRoot = input.Replace('/', '\\').TrimEnd('\\');
+                foreach (StorageAclRecord record in records)
+                {
+                    if (String.Equals(record.path, path, StringComparison.OrdinalIgnoreCase))
+                        record.path = requestedRoot;
+                    else
+                    {
+                        if (!record.path.StartsWith(path + "\\", StringComparison.OrdinalIgnoreCase))
+                            throw new IOException("Record is outside its validated root");
+                        record.path = requestedRoot + record.path.Substring(path.Length);
+                    }
+                }
                 return new StorageAclReply { ok = true, records = records.ToArray() };
             }
         }
