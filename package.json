@@ -1,8 +1,11 @@
 {
   "name": "@hkay-dev/ohmystash",
-  "version": "1.8.7",
+  "version": "1.9.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./ui": "./extensions/ui.ts"
+  },
   "description": "OhMyStash (OMS), a durable chat-scoped and global prompt manager for Oh My Pi.",
   "repository": {
     "type": "git",
@@ -31,7 +34,7 @@
   },
   "omp": {
     "name": "OhMyStash",
-    "description": "OhMyStash (OMS) provides durable prompt storage, scoped browsing, search, editing, and queue restoration.",
+    "description": "\uf1c0 OhMyStash (OMS) provides durable prompt storage, scoped browsing, search, editing, and queue restoration.",
     "extensions": [
       "./extensions/prompt-stash.ts"
     ],
@@ -111,7 +114,7 @@
       "Show icons": {
         "type": "boolean",
         "default": true,
-        "description": "Use icons from the active OMP symbol theme in the prompt browser."
+        "description": "Use contextual Nerd Font icons in the prompt browser."
       }
     }
   }

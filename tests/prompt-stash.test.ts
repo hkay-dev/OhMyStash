@@ -12,8 +12,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@oh-my-pi/pi-coding-agent";
 import type { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components";
+import type * as Tui from "@oh-my-pi/pi-tui";
+import type * as PopupUi from "../extensions/ui";
+
+let visibleWidth: typeof Tui.visibleWidth;
+let createFrame: typeof PopupUi.createFrame;
+let extensionIcon: typeof PopupUi.extensionIcon;
+let selectOption: typeof PopupUi.selectOption;
 
 const agentDir = mkdtempSync(join(tmpdir(), "prompt-stash-test-"));
 const TEST_SESSION_ID = randomUUID();
@@ -96,6 +103,9 @@ function writeStashFixture(
 
 beforeAll(async () => {
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  // Static SDK imports would cache paths before the test profile is bound.
+  ({ visibleWidth } = await import("@oh-my-pi/pi-tui"));
+  ({ createFrame, extensionIcon, selectOption } = await import("../extensions/ui"));
   const id = randomUUID();
   const stashedAt = new Date().toISOString();
   const stashDir = join(agentDir, "prompt-stash");
@@ -222,31 +232,6 @@ test("fully resets and repaints the terminal after a normal close", async () => 
   expect(terminal.write).toBe(originalWrite);
   expect(writes).toContain("\x1b[0m");
   expect(resetCalls).toBe(1);
-});
-
-test("uses the doubled default browser height", async () => {
-  let renderedHeight = 0;
-  const originalWrite = () => {};
-  const terminal = { rows: 100, write: originalWrite };
-  const context = {
-    cwd: agentDir,
-    mode: "tui",
-    sessionManager: TEST_SESSION_MANAGER,
-    ui: {
-      custom(factory: Function) {
-        const component = browserComponent(factory, () => {}, terminal);
-        renderedHeight = component.render(120).length;
-        return Promise.resolve(null);
-      },
-      getEditorText: () => "",
-      notify() {},
-    },
-  } as unknown as ExtensionContext;
-
-  await stashCommand.handler("", context);
-
-  expect(renderedHeight).toBe(42);
-  expect(terminal.write).toBe(originalWrite);
 });
 
 test("search Enter restores and q queues without an apply step", async () => {
@@ -1865,4 +1850,158 @@ test("keeps every recoverable temp visible beyond the recovery-window size", asy
   ).toHaveLength(expectedEntries);
   expect(frame).toContain(`This chat · 1 of ${expectedEntries}`);
   expect(frame).toContain("overflow recovery 256");
+});
+
+function optionPopupFixture(options: string[], rows = 12) {
+  const { promise, resolve } = Promise.withResolvers<string | undefined>();
+  const draft = { text: "/queue retained draft [Paste #1, 100 lines] [Image #1]", images: ["retained-image"] };
+  let component: { render(width: number): string[]; handleInput(data: string): void } | undefined;
+  const context = {
+    mode: "tui",
+    ui: {
+      custom(factory: Function) {
+        component = factory(
+          { terminal: { rows }, requestRender() {} },
+          TEST_THEME,
+          undefined,
+          resolve,
+        );
+        return promise;
+      },
+      getEditorText: () => draft.text,
+      setEditorText(text: string) {
+        draft.text = text;
+      },
+    },
+  } as unknown as ExtensionContext;
+  const result = selectOption(context, "Choose an option", options, "icon.model");
+  if (!component) throw new Error("Option popup was not presented");
+  return { component, result, draft };
+}
+
+test("fits square popup frames to ANSI and wide-character cell widths", () => {
+  for (const width of [1, 2, 5, 24]) {
+    const frame = createFrame(TEST_THEME as unknown as Theme, width);
+    const lines = [
+      frame.top("漢字 popup title"),
+      frame.row("\u001b[31m漢字 wide content that needs clipping\u001b[39m"),
+      frame.divider("漢字 options"),
+      frame.divider(),
+      frame.bottom(),
+    ];
+    for (const line of lines) expect(visibleWidth(line)).toBe(width);
+  }
+});
+
+test("moves shared popup selection by arrow, home, end and page keys", async () => {
+  const options = Array.from({ length: 50 }, (_, index) => `Option ${String(index).padStart(2, "0")}`);
+  const fixture = optionPopupFixture(options, 10);
+  fixture.component.render(80);
+  fixture.component.handleInput("\u001b[A");
+  fixture.component.handleInput("\u001b[B");
+  expect(fixture.component.render(80).join("\n")).toContain("> Option 01");
+  fixture.component.handleInput("\u001b[F");
+  expect(fixture.component.render(80).join("\n")).toContain("> Option 49");
+  fixture.component.handleInput("\u001b[H");
+  fixture.component.handleInput("\u001b[6~");
+  expect(fixture.component.render(80).join("\n")).toContain("> Option 05");
+  fixture.component.handleInput("\u001b[5~");
+  expect(fixture.component.render(80).join("\n")).toContain("> Option 00");
+  fixture.component.handleInput("\u001b[6~");
+  fixture.component.handleInput("\u001b[B");
+  fixture.component.handleInput("\r");
+  expect(await fixture.result).toBe("Option 06");
+});
+
+test("searches shared popup options without replacing the composer draft", async () => {
+  const fixture = optionPopupFixture(["Alpha", "Beta", "Gamma"]);
+  expect(fixture.component.render(80).join("\n")).toContain("Type to search");
+  fixture.component.handleInput("gamma");
+  const lines = fixture.component.render(80).join("\n");
+  expect(lines).toContain("Matches · 1/3");
+  expect(lines).toContain("> Gamma");
+  fixture.component.handleInput("\r");
+  expect(await fixture.result).toBe("Gamma");
+  expect(fixture.draft).toEqual({
+    text: "/queue retained draft [Paste #1, 100 lines] [Image #1]",
+    images: ["retained-image"],
+  });
+});
+
+test("cancels shared popup search with Escape or Ctrl+C", async () => {
+  for (const key of ["\u001b", "\u0003"]) {
+    const fixture = optionPopupFixture(["Alpha", "Beta"]);
+    fixture.component.handleInput("beta");
+    fixture.component.handleInput(key);
+    expect(await fixture.result).toBeUndefined();
+    expect(fixture.draft.text).toBe("/queue retained draft [Paste #1, 100 lines] [Image #1]");
+    expect(fixture.draft.images).toEqual(["retained-image"]);
+  }
+});
+
+test("keeps an empty option search open until explicitly cancelled", async () => {
+  for (const options of [[], ["Alpha"]]) {
+    const fixture = optionPopupFixture(options);
+    fixture.component.handleInput("zzzz");
+    const lines = fixture.component.render(80).join("\n");
+    expect(lines).toContain(options.length === 0 ? "No options available" : "No matching options");
+    let settled = false;
+    void fixture.result.then(() => { settled = true; });
+    fixture.component.handleInput("\r");
+    await Promise.resolve();
+    expect(settled).toBeFalse();
+    fixture.component.handleInput("\u001b");
+    expect(await fixture.result).toBeUndefined();
+  }
+});
+
+test("keeps shared popup navigation usable in small terminals", async () => {
+  for (const rows of [1, 2, 3, 4, 5, 6]) {
+    for (const width of [1, 4, 32]) {
+      const fixture = optionPopupFixture(["Alpha", "Beta"], rows);
+      const lines = fixture.component.render(width);
+      expect(lines.length).toBeLessThanOrEqual(rows);
+      for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+      fixture.component.handleInput("\u001b[B");
+      fixture.component.handleInput("\r");
+      expect(await fixture.result).toBe("Beta");
+    }
+  }
+});
+
+test("honors Show icons while using contextual Nerd glyphs in the stash browser", async () => {
+  let frame = "";
+  const context = {
+    cwd: agentDir,
+    mode: "tui",
+    sessionManager: TEST_SESSION_MANAGER,
+    ui: {
+      custom(factory: Function) {
+        const component = browserComponent(factory, () => {});
+        frame = component.render(120).join("\n");
+        return Promise.resolve(null);
+      },
+      getEditorText: () => "",
+      setEditorComponent() {},
+      notify() {},
+    },
+  } as unknown as ExtensionContext;
+  try {
+    for (const showIcons of [true, false]) {
+      writeSettings({ "Show icons": showIcons, "Dim background": false, "Browser layout": "Stacked" });
+      await refreshConfig?.({}, context);
+      await stashCommand.handler("", context);
+      if (showIcons) {
+        expect(frame).toContain(extensionIcon("icon.cache"));
+        expect(frame).toContain(extensionIcon("icon.folder"));
+      } else {
+        expect(frame).not.toMatch(/[\uE000-\uF8FF\u{F0000}-\u{FFFFD}]/u);
+        expect(frame).toContain("OhMyStash");
+        expect(frame).toContain("[D]");
+      }
+    }
+  } finally {
+    writeSettings({ "Dim background": true, "Time format": "12-hour clock" });
+    await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+  }
 });

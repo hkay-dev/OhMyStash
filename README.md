@@ -26,7 +26,7 @@ omp plugin install github:hkay-dev/OhMyStash
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
-OhMyStash requires OMP 18.2.5 or newer. Its image attachment helper uses the TUI package's `prompt/image-format` export. Extension loading and all 29 tests have been checked against OMP 18.3.0.
+OhMyStash requires OMP 18.2.5 or newer. Its image attachment helper uses the TUI package's `prompt/image-format` export. Version 1.9.0 was loaded from an installed npm archive in compiled OMP 18.6.1; stash/restore, the browser, and the native plugin settings page were exercised, and all 35 unit tests passed. No model requests were made.
 
 To update OhMyStash after a new release:
 
@@ -55,6 +55,8 @@ Press `Alt+S` on an empty composer to restore the newest stash from the current 
 Press `Alt+Shift+S` to open the full stash browser. The browser supports preview, search, chat scope, queue actions, editing, locking, and deletion.
 
 Considerable work went into the browser's visual hierarchy, color treatment, spacing, and keyboard flow.
+
+The browser uses a centered overlay at 90% of terminal width, with square, accent-colored borders and an embedded title. Contextual Nerd Font glyphs honor **Show icons** without changing OMP's global symbol preset. Use a Nerd Font or symbols fallback to display them. This shared frame does not replace the browser's mature search, chat scope, queue, attachment, edit, lock, recovery, retention, or adaptive-layout behavior.
 
 ## Browser capabilities
 
@@ -154,7 +156,7 @@ Available settings:
 - **Dim background**
 - **Background brightness (%)**
 - **Background saturation (%)**
-- **Show icons**
+- **Show icons**, controlling contextual Nerd Font glyphs in the stash browser
 
 Retention removes only expired, unlocked, normal stashes. Locked stashes, conflict copies, and recovery entries do not expire.
 
@@ -244,10 +246,51 @@ bun install
 bun run check
 bun test
 bun run benchmark:cross-chat
-bun run capture:all
 ```
 
-OhMyStash targets OMP 17.4 or newer. The extension entry point remains `extensions/prompt-stash.ts`.
+OhMyStash targets OMP 18.2.5 or newer. The extension entry point remains `extensions/prompt-stash.ts`.
+
+### Shared popup UI
+
+Version 1.9.0 exports the common popup helpers at `@hkay-dev/ohmystash/ui`:
+
+- `createFrame(theme, width)` returns square, accent-colored `top`, `row`, `divider`, and `bottom` renderers, with an embedded title and terminal-width-safe content.
+- `fitToWidth(text, width)` clips and pads text to the requested visible terminal width, accounting for ANSI styling and wide characters.
+- `extensionIcon(key)` reads the Nerd Font symbol preset and returns an empty string for an unknown key. It does not change the host symbol preset or read a plugin's Show icons setting; callers apply their own setting.
+- `selectOption(ctx, title, options, iconKey?)` opens a searchable, keyboard-navigable option overlay and resolves to the selected string, or `undefined` on cancellation, leaving the host composer and attachments untouched.
+- `POPUP_OPTIONS` supplies `overlay: true` with a centered `90%` width and `100%` maximum height.
+
+Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module. Custom popups use the square frame; `/settings` → **Plugins** pages retain OMP's native settings chrome.
+
+### Packaged installed-runtime proof
+
+Use the existing [settings capture](showcase/ohmystash-settings.video.ts) to check a real package archive through the installed compiled OMP loader, not `-e` against this worktree. Review the installed version's contracts first. The recipe below targets OMP 18.6.0 using its tagged [CLI](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.6.0/docs/cli-reference.md), [loader](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.6.0/docs/extension-loading.md), [installer](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.6.0/docs/plugin-manager-installer-plumbing.md), and [root-path](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.6.0/docs/environment-variables.md) documentation. A newer source checkout is not matching-version evidence.
+
+From this repository, with the existing capture dependencies available:
+
+```sh
+export OMS_CAPTURE_OUTPUT="$(mktemp -d "${TMPDIR:-/tmp}/ohmystash-proof.XXXXXX")"
+artifact_name="$(npm pack --ignore-scripts --pack-destination "$OMS_CAPTURE_OUTPUT")"
+export OMS_CAPTURE_ARTIFACT="$OMS_CAPTURE_OUTPUT/$artifact_name"
+export OMS_CAPTURE_OMP="$(command -v omp)"
+export OMS_CAPTURE_OMP_VERSION=18.6.0
+npm exec -- tcut test showcase/ohmystash-settings.video.ts
+npm run capture:settings
+npm exec -- tcut doctor "$OMS_CAPTURE_OUTPUT/ohmystash-release.cast"
+ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_name,width,height,avg_frame_rate -of json "$OMS_CAPTURE_OUTPUT/ohmystash-release.mp4"
+```
+
+`npm pack` above produces an archive of the current working tree without lifecycle scripts. For an approved release artifact, set `OMS_CAPTURE_ARTIFACT` to that archive instead. Record the authored revision/working-tree state separately from its SHA-256; a local pack is not publication evidence. The helper requires the exact expected version and a compiled executable, with no source-launcher fallback.
+
+Before OMP can import any extension, the helper clears inherited profile/credential/session environment values and creates private HOME, agent, cwd, temporary and XDG roots. It writes reviewed startup/background-disable and display settings plus the catalog described below, never live config, models, auth or stashes. It installs the archive and exact matching-version SDK peers into a disposable consumer with Bun lifecycle scripts disabled, records peer versions, registers the installed package with isolated `omp plugin link`, and starts compiled OMP without `-e` or `--no-extensions`. Linking extracted bytes alone doesn't supply runtime dependencies such as `pi-tui`. Dependency installation may fetch public packages; no prompt is submitted.
+
+Local commands still need a selected model. The fixture writes credential-free synthetic Flash catalog metadata with a reserved `.invalid` endpoint and selects only that entry. This allows local UI commands; it doesn't provide a backend or prove Gemini inference.
+
+The captured sequence exercises Alt+S save/restore, Alt+Shift+S browser entry, Enter restore, one retained synthetic stash under the isolated agent root, and plugin settings visibility. Successful shutdown removes only that run's fixture. Failure leaves the private fixture for diagnosis. The JSON receipt is `prepared` until those consumer assertions and exit status 0 succeed, then `consumer-exercised`; it does not claim media acceptance. Inspect both PNGs, the GIF/MP4, and the complete raw cast/header, including hidden intervals and environment values, before accepting release evidence.
+
+This is one-session PTY shortcut/TUI/storage evidence with the recorded dependency graph. It doesn't establish physical OS key delivery, queue dispatch or model inference, attachments, restart durability, registry publication or upgrades. Background discovery may contact public metadata endpoints; fresh roots aren't a network/OS sandbox.
+
+The older browser showcase and `capture:all` use worktree/seeded fixtures, and their queue-submit scene can dispatch inference. They are not this packaged-release check or a no-credentials/offline recipe. Do not use them as installed-release evidence.
 
 ## Credits
 

@@ -40,6 +40,7 @@ import {
   type TUI,
 } from "@oh-my-pi/pi-tui";
 import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
+import { createFrame, extensionIcon, fitToWidth, POPUP_OPTIONS } from "./ui";
 
 type InputMode = "normal" | "queue";
 
@@ -1275,11 +1276,6 @@ function previewPage(model: PreviewModel, offset: number, count: number): string
   return page;
 }
 
-function pad(text: string, width: number): string {
-  const clipped = truncateToWidth(text, Math.max(0, width));
-  return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
-}
-
 function parseEditorDraft(text: string): EditorDraft {
   if (text === "/queue") return { inputMode: "queue", text: "" };
   if (/^\/queue[ \t\n]/.test(text)) return { inputMode: "queue", text: text.slice(7) };
@@ -1780,16 +1776,15 @@ function showBrowser(
           const renderNow = Date.now();
           const border = (text: string) => theme.fg("accent", text);
           const outerWidth = Math.max(1, renderWidth - 2);
-          const outerRow = (text = "") => `${border("│")}${pad(text, outerWidth)}${border("│")}`;
           const searchIcon = theme.fg(
             "accent",
-            pluginConfig.showIcons ? theme.symbol("icon.search") : "/",
+            pluginConfig.showIcons ? extensionIcon("icon.search") : "/",
           );
-          const stashGlyph = pluginConfig.showIcons ? theme.symbol("icon.cache") : "";
-          const draftGlyph = pluginConfig.showIcons ? theme.symbol("icon.file") : "[D]";
-          const savedGlyph = pluginConfig.showIcons ? theme.symbol("icon.folder") : "";
-          const queueGlyph = pluginConfig.showIcons ? theme.symbol("icon.output") : "[Q]";
-          const timeGlyph = pluginConfig.showIcons ? theme.symbol("icon.time") : "";
+          const stashGlyph = pluginConfig.showIcons ? extensionIcon("icon.cache") : "";
+          const draftGlyph = pluginConfig.showIcons ? extensionIcon("icon.file") : "[D]";
+          const savedGlyph = pluginConfig.showIcons ? extensionIcon("icon.folder") : "";
+          const queueGlyph = pluginConfig.showIcons ? extensionIcon("icon.output") : "[Q]";
+          const timeGlyph = pluginConfig.showIcons ? extensionIcon("icon.time") : "";
           const labelWithIcon = (glyph: string, label: string) =>
             glyph ? `${glyph} ${label}` : label;
           const keyHint = (key: string, label: string) =>
@@ -1848,21 +1843,6 @@ function showBrowser(
             const clipped = truncateToWidth(field, fieldWidth);
             return `${prefix}${clipped}${" ".repeat(Math.max(0, fieldWidth - visibleWidth(clipped)))}${suffix}`;
           };
-          const topBorder = (): string => {
-            const title = theme.fg(
-              "accent",
-              theme.bold(
-                truncateToWidth(
-                  ` ${labelWithIcon(stashGlyph, "OhMyStash")} `,
-                  Math.max(1, renderWidth - 2),
-                  "",
-                ),
-              ),
-            );
-            const fill = Math.max(0, renderWidth - 2 - visibleWidth(title));
-            return `${border("┌")}${title}${border("─".repeat(fill))}${border("┐")}`;
-          };
-          const bottomBorder = () => border(`└${"─".repeat(Math.max(0, renderWidth - 2))}┘`);
           const ruleCell = (label: string, cellWidth: number): string => {
             const text = ` ${label} `;
             const heading = theme.fg(
@@ -1958,6 +1938,7 @@ function showBrowser(
             );
           }
 
+          const frame = createFrame(theme, renderWidth);
           const useSplitLayout =
             (pluginConfig.layout === "split" && renderWidth >= 72) ||
             (pluginConfig.layout === "auto" && renderWidth >= 92);
@@ -1995,8 +1976,8 @@ function showBrowser(
               `Preview · ${entry?.inputMode === "queue" ? "Queue draft" : "Prompt draft"}`,
             );
             const lines = [
-              topBorder(),
-              outerRow(renderSearchBar(outerWidth)),
+              frame.top(labelWithIcon(stashGlyph, "OhMyStash")),
+              frame.row(renderSearchBar(outerWidth)),
               `${border("├")}${ruleCell(labelWithIcon(savedGlyph, `${activeScopeLabel} · ${position}`), leftWidth)}${border("┬")}${ruleCell(
                 previewLabel,
                 rightWidth,
@@ -2040,19 +2021,19 @@ function showBrowser(
                 );
               }
               lines.push(
-                `${border("│")}${pad(` ${left}`, leftWidth)}${border("│")}${pad(` ${right}`, rightWidth)}${border("│")}`,
+                `${border("│")}${fitToWidth(` ${left}`, leftWidth)}${border("│")}${fitToWidth(` ${right}`, rightWidth)}${border("│")}`,
               );
             }
             if (entry) {
               lines.push(
                 border(`├${"─".repeat(leftWidth)}┼${"─".repeat(rightWidth)}┤`),
-                `${border("│")}${pad("", leftWidth)}${border("│")}${pad(` ${promptFooter}`, rightWidth)}${border("│")}`,
+                `${border("│")}${fitToWidth("", leftWidth)}${border("│")}${fitToWidth(` ${promptFooter}`, rightWidth)}${border("│")}`,
               );
             }
             lines.push(
               border(`├${"─".repeat(leftWidth)}┴${"─".repeat(rightWidth)}┤`),
-              outerRow(` ${browserFooter}`),
-              bottomBorder(),
+              frame.row(` ${browserFooter}`),
+              frame.bottom(),
             );
             return brightenModalLines(lines, theme);
           }
@@ -2086,15 +2067,15 @@ function showBrowser(
             `Preview · ${entry?.inputMode === "queue" ? "Queue draft" : "Prompt draft"}`,
           );
           const lines = [
-            topBorder(),
-            outerRow(renderSearchBar(outerWidth)),
-            `${border("├")}${ruleCell(labelWithIcon(savedGlyph, `${activeScopeLabel} · ${position}`), renderWidth - 2)}${border("┤")}`,
+            frame.top(labelWithIcon(stashGlyph, "OhMyStash")),
+            frame.row(renderSearchBar(outerWidth)),
+            frame.divider(labelWithIcon(savedGlyph, `${activeScopeLabel} · ${position}`)),
           ];
           for (let row = 0; row < listRows; row += 1) {
             const index = firstListIndex + row;
             const item = filteredEntries[index];
             lines.push(
-              outerRow(
+              frame.row(
                 item
                   ? listRow(item, index, outerWidth)
                   : row === 0 && !entry
@@ -2107,8 +2088,8 @@ function showBrowser(
             );
           }
           lines.push(
-            `${border("├")}${ruleCell(previewLabel, renderWidth - 2)}${border("┤")}`,
-            outerRow(
+            frame.divider(previewLabel),
+            frame.row(
               entry && model
                 ? theme.fg(
                     "muted",
@@ -2123,26 +2104,23 @@ function showBrowser(
             ),
           );
           if (showOrigin) {
-            lines.push(outerRow(` ${theme.fg("dim", stashOriginDetails(entry.origin))}`));
+            lines.push(frame.row(` ${theme.fg("dim", stashOriginDetails(entry.origin))}`));
           }
           for (let row = 0; row < previewRows; row += 1) {
-            lines.push(outerRow(` ${page[row] ?? ""}`));
+            lines.push(frame.row(` ${page[row] ?? ""}`));
           }
           if (entry) {
             lines.push(
-              border(`├${"─".repeat(Math.max(0, renderWidth - 2))}┤`),
-              outerRow(` ${promptFooter}`),
+              frame.divider(),
+              frame.row(` ${promptFooter}`),
             );
           }
-          lines.push(outerRow(` ${browserFooter}`), bottomBorder());
+          lines.push(frame.row(` ${browserFooter}`), frame.bottom());
           return brightenModalLines(lines, theme);
         },
       };
     },
-    {
-      overlay: true,
-      overlayOptions: { anchor: "center", width: "90%", maxHeight: "100%" },
-    },
+    POPUP_OPTIONS,
   ))().finally(() => restoreBackground?.());
 }
 
