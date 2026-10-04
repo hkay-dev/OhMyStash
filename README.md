@@ -26,7 +26,7 @@ omp plugin install github:hkay-dev/OhMyStash
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
-OhMyStash requires OMP 18.2.5 or newer. Its image attachment helper uses the TUI package's `prompt/image-format` export. Version 1.9.0 was loaded from an installed npm archive in compiled OMP 18.6.1; stash/restore, the browser, and the native plugin settings page were exercised, and all 35 unit tests passed. No model requests were made.
+OhMyStash requires OMP 18.2.5 or newer. Its image attachment helper uses the TUI package's `prompt/image-format` export. Version 1.9.0 was loaded from an installed npm archive in compiled OMP 18.6.1; stash/restore, the browser, and the native plugin settings page were exercised. On macOS, 48 tests passed and 12 Windows-only tests were skipped. No model requests were made.
 
 To update OhMyStash after a new release:
 

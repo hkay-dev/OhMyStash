@@ -13,7 +13,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "bun test tests/prompt-stash.test.ts",
+    "test": "bun test --timeout 60000 --preload ./tests/host-preload.ts ./tests",
     "benchmark:cross-chat": "bun run benchmarks/cross-chat.ts",
     "capture:browser": "bun run showcase/patch-wterm-cells.ts && OMS_CAPTURE_FEATURE=scope tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-browser.cast && bun run showcase/check-border-alignment.ts assets/ohmystash-browser.png && OMS_CAPTURE_FEATURE=search tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-search.cast && OMS_CAPTURE_FEATURE=queue-draft tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-queue-draft.cast && OMS_CAPTURE_FEATURE=submit-queue tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-submit-queue.cast && OMS_CAPTURE_FEATURE=attachments tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-attachments.cast && OMS_CAPTURE_FEATURE=editing tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-editing.cast && OMS_CAPTURE_FEATURE=locking-deletion tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-locking-deletion.cast",
     "capture:settings": "bun run showcase/patch-wterm-cells.ts && tcut showcase/ohmystash-settings.video.ts --force",
