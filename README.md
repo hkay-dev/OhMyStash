@@ -26,7 +26,7 @@ From the `v1.10.0` checkout, download the four SDK archives before installing:
 
 ```sh
 gh release download v1.10.0 --repo hkay-dev/OhMyStash --pattern 'oh-my-pi-pi-*.tgz' --dir artifacts
-bun install --frozen-lockfile --ignore-scripts
+bun install --frozen-lockfile --ignore-scripts --force --cache-dir node_modules/.cache/omp-sdk
 omp plugin link .
 ```
 
@@ -261,7 +261,7 @@ Use Bun 1.4.2. Download the companion SDK archives from the [1.10.0 release](htt
 Root overrides bind the SDK archive graph, and `bun.lock` records its integrity hashes. Keep the archives with the checkout when moving this build.
 
 ```sh
-bun install --frozen-lockfile --ignore-scripts
+bun install --frozen-lockfile --ignore-scripts --force --cache-dir node_modules/.cache/omp-sdk
 bun run check
 bun test
 bun run benchmark:cross-chat
