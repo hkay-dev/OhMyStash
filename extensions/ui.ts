@@ -1,15 +1,6 @@
-import type { ExtensionContext, ExtensionCustomOptions, Theme } from "@oh-my-pi/pi-coding-agent";
-import { fuzzyFilter, Input, Key, matchesKey, resolveModalPresentation, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import type { ExtensionContext, Theme } from "@oh-my-pi/pi-coding-agent";
+import { fuzzyFilter, Input, Key, matchesKey, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { SYMBOL_PRESETS, type SymbolKey } from "@oh-my-pi/pi-tui/theme/symbols";
-
-if (typeof resolveModalPresentation !== "function") {
-  throw new Error("OhMyStash popups require the modal-enabled OMP build (18.7.1-modal.0).");
-}
-
-export const POPUP_OPTIONS = {
-  overlay: true,
-  overlayOptions: { anchor: "center", width: "90%", maxHeight: "100%", modal: true },
-} as const satisfies ExtensionCustomOptions;
 
 export function extensionIcon(key: string): string {
   const glyph = SYMBOL_PRESETS.nerd[key as SymbolKey];
@@ -54,7 +45,7 @@ export function selectOption(
   options: string[],
   iconKey?: string,
 ): Promise<string | undefined> {
-  // Overlay mode leaves the host composer and its attachments untouched.
+  // OMP's inline custom UI restores the composer when the picker closes.
   return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
     const searchInput = new Input();
     searchInput.prompt = "";
@@ -167,5 +158,5 @@ export function selectOption(
         return lines;
       },
     };
-  }, POPUP_OPTIONS);
+  });
 }

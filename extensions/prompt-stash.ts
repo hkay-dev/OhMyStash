@@ -39,7 +39,7 @@ import {
   type TUI,
 } from "@oh-my-pi/pi-tui";
 import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
-import { createFrame, extensionIcon, fitToWidth, POPUP_OPTIONS } from "./ui";
+import { createFrame, extensionIcon, fitToWidth } from "./ui";
 import {
   hasPrivateStoragePermissions,
   invalidatePrivateStoragePermission,
@@ -2011,7 +2011,6 @@ function showBrowser(
         },
       };
     },
-    POPUP_OPTIONS,
   );
 }
 

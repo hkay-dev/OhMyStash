@@ -18,23 +18,25 @@ OMP's plugin manager uses Bun for package installation:
 brew install bun
 ```
 
-Version 1.10.0 runs on our shared plugin SDK/framework. It gives plugin popups one presentation contract through OMP's modal API and `@hkay-dev/ohmystash/ui`, including dimming, opaque surfaces, and the black outer border.
+Version 1.10.1 works with stock OMP 18.8.3. The browser and option pickers open inline at the bottom, in the composer area, like OMP's built-in Switch Model dialog. They keep square, accent-colored frames without dimming, desaturation, or a full-screen blackout.
 
-Use the matching OMP `18.7.1-modal.0` build from the [1.10.0 release assets](https://github.com/hkay-dev/OhMyStash/releases/tag/v1.10.0). The bundled executable is for macOS Apple Silicon. The release also includes the SDK source bundle for other builds. These companion SDK packages aren't npm registry releases.
-
-From the `v1.10.0` checkout, download the four SDK archives before installing:
+Install directly from GitHub:
 
 ```sh
-gh release download v1.10.0 --repo hkay-dev/OhMyStash --pattern 'oh-my-pi-pi-*.tgz' --dir artifacts
-bun install --frozen-lockfile --ignore-scripts --force --cache-dir node_modules/.cache/omp-sdk
-omp plugin link .
+omp plugin install github:hkay-dev/OhMyStash
 ```
+
+OMP installs the standard SDK dependencies automatically. No custom OMP executable, SDK archives, or separate installer is needed. To pin this release, use `github:hkay-dev/OhMyStash#v1.10.1` instead.
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
-The image attachment helper uses the TUI package's `prompt/image-format` export. Version 1.9.0 was loaded from an installed npm archive in compiled OMP 18.6.1; stash/restore, the browser, and the native plugin settings page were exercised. On macOS, 48 tests passed and 12 Windows-only tests were skipped. No model requests were made.
+The image attachment helper uses the stock TUI package's `prompt/image-format` export.
 
-For this release, update the matching SDK and package archives together using the release assets. A bare Git plugin installation does not supply the companion SDK graph.
+To update an existing installation:
+
+```sh
+omp plugin install --force github:hkay-dev/OhMyStash
+```
 
 Check the installed package and extension manifest with:
 
@@ -58,7 +60,7 @@ Press `Alt+Shift+S` to open the full stash browser. The browser supports preview
 
 Considerable work went into the browser's visual hierarchy, color treatment, spacing, and keyboard flow.
 
-The browser uses a centered overlay at 90% of terminal width, with square, accent-colored borders and an embedded title. Contextual Nerd Font glyphs honor **Show icons** without changing OMP's global symbol preset. Use a Nerd Font or symbols fallback to display them. This shared frame does not replace the browser's mature search, chat scope, queue, attachment, edit, lock, recovery, retention, or adaptive-layout behavior.
+The browser uses the bottom-docked inline editor area, with square, accent-colored borders and an embedded title. Closing it restores the composer and its attachments. Contextual Nerd Font glyphs honor **Show icons** without changing OMP's global symbol preset. Use a Nerd Font or symbols fallback to display them. This shared frame does not replace the browser's mature search, chat scope, queue, attachment, edit, lock, recovery, retention, or adaptive-layout behavior.
 
 ## Browser capabilities
 
@@ -159,17 +161,7 @@ Available settings:
 
 Retention removes only expired, unlocked, normal stashes. Locked stashes, conflict copies, and recovery entries do not expire.
 
-Popup appearance is shared across plugins and builtin dialogs through OMP's `tui.modal` record in `config.yml`:
-
-```yaml
-tui:
-  modal:
-    dimBackground: true
-    brightness: 0.62
-    saturation: 0
-```
-
-Brightness and saturation range from `0` to `1`. The active popup stays in color and has an opaque interior and a one-cell black ring outside its accent frame. Explicit values from the three old OhMyStash backdrop settings migrate automatically into the same global or project config layer; existing central values take precedence.
+Pickers use stock OMP's inline editor area. Conversation history stays in place and keeps its colors; no popup backdrop settings are needed. OMP restores the composer when a picker closes. `/settings` → **Plugins** retains OMP's native settings chrome.
 
 All the same settings are available from the CLI:
 
@@ -251,39 +243,31 @@ A separate filesystem backup is still required for hardware failure, filesystem 
 
 ## Development
 
-Use Bun 1.4.2. Download the companion SDK archives from the [1.10.0 release](https://github.com/hkay-dev/OhMyStash/releases/tag/v1.10.0). The ignored `artifacts/` directory must contain:
-
-- `oh-my-pi-pi-coding-agent-18.7.1-modal.0.tgz`
-- `oh-my-pi-pi-tui-18.7.1-modal.0.tgz`
-- `oh-my-pi-pi-utils-18.7.1-modal.0.tgz`
-- `oh-my-pi-pi-wire-18.7.1-modal.0.tgz`
-
-Root overrides bind the SDK archive graph, and `bun.lock` records its integrity hashes. Keep the archives with the checkout when moving this build.
+Use Bun 1.4.2. Development dependencies pin the official SDK packages to 18.8.3, with `^18.8.3` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
 
 ```sh
-bun install --frozen-lockfile --ignore-scripts --force --cache-dir node_modules/.cache/omp-sdk
+bun install --frozen-lockfile --ignore-scripts
 bun run check
 bun test
 bun run benchmark:cross-chat
 ```
 
-OhMyStash requires the matching modal-enabled OMP build and SDK, currently `18.7.1-modal.0`. The extension entry point remains `extensions/prompt-stash.ts`.
+OhMyStash 1.10.1 runs on stock OMP 18.8.3. The extension entry point remains `extensions/prompt-stash.ts`.
 
-### Shared popup UI
+### Shared inline UI
 
-Version 1.10.0 exports the common popup helpers at `@hkay-dev/ohmystash/ui`:
+Version 1.10.1 exports the common inline picker helpers at `@hkay-dev/ohmystash/ui`, using only stock public SDK exports:
 
 - `createFrame(theme, width)` returns square, accent-colored `top`, `row`, `divider`, and `bottom` renderers, with an embedded title and terminal-width-safe content.
 - `fitToWidth(text, width)` clips and pads text to the requested visible terminal width, accounting for ANSI styling and wide characters.
 - `extensionIcon(key)` reads the Nerd Font symbol preset and returns an empty string for an unknown key. It does not change the host symbol preset or read a plugin's Show icons setting; callers apply their own setting.
-- `selectOption(ctx, title, options, iconKey?)` opens a searchable, keyboard-navigable option overlay and resolves to the selected string, or `undefined` on cancellation, leaving the host composer and attachments untouched.
-- `POPUP_OPTIONS` supplies `overlay: true` with a centered `90%` width, `100%` maximum height, and renderer-owned `modal: true` presentation.
+- `selectOption(ctx, title, options, iconKey?)` opens a searchable, keyboard-navigable inline picker and resolves to the selected string, or `undefined` on cancellation, leaving the host composer and attachments untouched.
 
-Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module. Custom popups use the square frame; `/settings` → **Plugins** pages retain OMP's native settings chrome.
+Custom pickers use `ctx.ui.custom(factory)` without overlay options, so OMP mounts them in its standard inline editor area and restores the composer on completion. Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Companion plugins can use `github:hkay-dev/OhMyStash#v1.10.1`; OMP installs declared dependencies through its normal package manager. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module.
 
 ### Packaged installed-runtime proof
 
-Use the existing [settings capture](showcase/ohmystash-settings.video.ts) to check a real package archive through the installed compiled OMP loader, not `-e` against this worktree. Review the installed version's contracts first. The recipe below targets OMP 18.6.0 using its tagged [CLI](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.6.0/docs/cli-reference.md), [loader](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.6.0/docs/extension-loading.md), [installer](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.6.0/docs/plugin-manager-installer-plumbing.md), and [root-path](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.6.0/docs/environment-variables.md) documentation. A newer source checkout is not matching-version evidence.
+Use the existing [settings capture](showcase/ohmystash-settings.video.ts) to check a real package archive through the installed compiled OMP loader, not `-e` against this worktree. Review the installed version's contracts first. The recipe below targets stock OMP 18.8.3 using its tagged [CLI](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.8.3/docs/cli-reference.md), [loader](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.8.3/docs/extension-loading.md), [installer](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.8.3/docs/plugin-manager-installer-plumbing.md), and [root-path](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.8.3/docs/environment-variables.md) documentation. A newer source checkout is not matching-version evidence.
 
 From this repository, with the existing capture dependencies available:
 
@@ -292,7 +276,7 @@ export OMS_CAPTURE_OUTPUT="$(mktemp -d "${TMPDIR:-/tmp}/ohmystash-proof.XXXXXX")
 artifact_name="$(npm pack --ignore-scripts --pack-destination "$OMS_CAPTURE_OUTPUT")"
 export OMS_CAPTURE_ARTIFACT="$OMS_CAPTURE_OUTPUT/$artifact_name"
 export OMS_CAPTURE_OMP="$(command -v omp)"
-export OMS_CAPTURE_OMP_VERSION=18.6.0
+export OMS_CAPTURE_OMP_VERSION=18.8.3
 npm exec -- tcut test showcase/ohmystash-settings.video.ts
 npm run capture:settings
 npm exec -- tcut doctor "$OMS_CAPTURE_OUTPUT/ohmystash-release.cast"

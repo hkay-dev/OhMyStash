@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.1 - 2026-10-07
+
+### Fixed
+
+- Restore the normal `omp plugin install github:hkay-dev/OhMyStash` path on stock OMP 18.8.3. Standard SDK dependencies install automatically, with no custom executable, SDK archives, or overrides.
+- Replace renderer-specific popups with bottom-docked inline pickers, like OMP's built-in Switch Model dialog. Keep square accent frames and restore the composer and attachments on close.
+- Remove custom backdrop settings and the overlay-options export from the shared UI. Conversation history keeps its colors without dimming, desaturation, or a full-screen blackout.
+- Keep stash/restore, browser search and chat scope, queue actions, attachments, editing, locks, recovery, retention, and native plugin settings.
+- Regenerate the lockfile from official 18.8.3 SDK packages and update installation and development docs.
+
 ## 1.10.0 - 2026-10-07
 
 ### Changed
