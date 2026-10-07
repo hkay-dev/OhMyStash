@@ -1,9 +1,12 @@
 {
   "name": "@hkay-dev/ohmystash",
-  "version": "1.10.1",
+  "version": "1.10.2",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.2",
+  "files": [
+    "extensions"
+  ],
   "exports": {
     "./ui": "./extensions/ui.ts"
   },

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.2 - 2026-10-07
+
+### Fixed
+
+- Limit the install archive to the extension runtime and package metadata. Leave demo media, tests, benchmarks, capture tools, and full documentation on GitHub.
+
 ## 1.10.1 - 2026-10-07
 
 ### Fixed
