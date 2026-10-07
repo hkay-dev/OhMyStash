@@ -20,7 +20,7 @@ brew install bun
 
 Version 1.10.0 runs on our shared plugin SDK/framework. It gives plugin popups one presentation contract through OMP's modal API and `@hkay-dev/ohmystash/ui`, including dimming, opaque surfaces, and the black outer border.
 
-Use the matching OMP `18.7.1-modal.0` build from the [1.10.0 release assets](https://github.com/hkay-dev/OhMyStash/releases/tag/v1.10.0). The bundled executable is for macOS Apple Silicon. The release also includes the SDK source patch for other builds. These companion SDK packages aren't npm registry releases.
+Use the matching OMP `18.7.1-modal.0` build from the [1.10.0 release assets](https://github.com/hkay-dev/OhMyStash/releases/tag/v1.10.0). The bundled executable is for macOS Apple Silicon. The release also includes the SDK source bundle for other builds. These companion SDK packages aren't npm registry releases.
 
 From the `v1.10.0` checkout, download the four SDK archives before installing:
 
