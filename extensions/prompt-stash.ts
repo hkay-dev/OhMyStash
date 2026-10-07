@@ -22,7 +22,6 @@ import {
   getAgentDir,
   type ExtensionAPI,
   type ExtensionContext,
-  type Theme,
 } from "@oh-my-pi/pi-coding-agent";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components";
@@ -61,9 +60,6 @@ interface PromptStashConfig {
   stashShortcut: string;
   browserShortcut: string;
   editorCommand: string;
-  backgroundDimming: boolean;
-  backgroundIntensity: number;
-  backgroundSaturation: number;
   showIcons: boolean;
   layout: BrowserLayout;
   maxBodyRows: number;
@@ -190,17 +186,11 @@ const COMPACT_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
 });
-const TRUECOLOR_SGR =
-  /\x1b\[(?:(38|48);2;(\d+);(\d+);(\d+)|(38|48):2::(\d+):(\d+):(\d+))m/g;
-const INTENSITY_OR_RESET_SGR = /\x1b\[(0|1|22|39)m/g;
 const PLUGIN_NAME = "@hkay-dev/ohmystash";
 const DEFAULT_CONFIG: PromptStashConfig = {
   stashShortcut: "alt+s",
   editorCommand: "",
   browserShortcut: "alt+shift+s",
-  backgroundDimming: true,
-  backgroundIntensity: 0.62,
-  backgroundSaturation: 0.55,
   showIcons: true,
   layout: "auto",
   maxBodyRows: 36,
@@ -237,7 +227,6 @@ async function loadPluginConfig(cwd: string): Promise<PromptStashConfig> {
     const stashShortcut = raw["Stash shortcut"];
     const browserShortcut = raw["Browser shortcut"];
     const editorCommand = raw["Editor command"];
-    const dimBackground = raw["Dim background"];
     const showIcons = raw["Show icons"];
     const timeFormat = raw["Time format"];
     return {
@@ -251,24 +240,6 @@ async function loadPluginConfig(cwd: string): Promise<PromptStashConfig> {
         typeof browserShortcut === "string" && browserShortcut.trim()
           ? browserShortcut.trim().toLowerCase()
           : DEFAULT_CONFIG.browserShortcut,
-      backgroundDimming:
-        typeof dimBackground === "boolean"
-          ? dimBackground
-          : DEFAULT_CONFIG.backgroundDimming,
-      backgroundIntensity:
-        boundedNumber(
-          raw["Background brightness (%)"],
-          DEFAULT_CONFIG.backgroundIntensity * 100,
-          30,
-          95,
-        ) / 100,
-      backgroundSaturation:
-        boundedNumber(
-          raw["Background saturation (%)"],
-          DEFAULT_CONFIG.backgroundSaturation * 100,
-          0,
-          100,
-        ) / 100,
       showIcons: typeof showIcons === "boolean" ? showIcons : DEFAULT_CONFIG.showIcons,
       layout,
       maxBodyRows: Math.round(
@@ -1500,86 +1471,6 @@ function compactAge(stashedAtMs: number, now: number): string {
   return COMPACT_DATE_FORMATTER.format(stashedAtMs);
 }
 
-function dimRgb(red: number, green: number, blue: number, isLight: boolean): [number, number, number] {
-  const gray = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
-  const saturation = pluginConfig.backgroundSaturation;
-  const intensity = pluginConfig.backgroundIntensity;
-  const softenAndAdjust = (channel: number) => {
-    const softened = gray * (1 - saturation) + channel * saturation;
-    return Math.round(
-      isLight ? softened * intensity + 255 * (1 - intensity) : softened * intensity,
-    );
-  };
-  return [softenAndAdjust(red), softenAndAdjust(green), softenAndAdjust(blue)];
-}
-
-function transformTruecolor(value: string, isLight: boolean, protect: boolean): string {
-  return value.replace(
-    TRUECOLOR_SGR,
-    (
-      _match,
-      semicolonKind: string | undefined,
-      semicolonRed: string | undefined,
-      semicolonGreen: string | undefined,
-      semicolonBlue: string | undefined,
-      colonKind: string | undefined,
-      colonRed: string | undefined,
-      colonGreen: string | undefined,
-      colonBlue: string | undefined,
-    ) => {
-      const kind = semicolonKind ?? colonKind!;
-      const red = semicolonRed ?? colonRed!;
-      const green = semicolonGreen ?? colonGreen!;
-      const blue = semicolonBlue ?? colonBlue!;
-      if (protect) return `\x1b[22;${kind};2;${red};${green};${blue}m`;
-      const dimmed = dimRgb(Number(red), Number(green), Number(blue), isLight);
-      return semicolonKind
-        ? `\x1b[${kind};2;${dimmed[0]};${dimmed[1]};${dimmed[2]}m`
-        : `\x1b[${kind}:2::${dimmed[0]}:${dimmed[1]}:${dimmed[2]}m`;
-    },
-  );
-}
-
-function dimAnsi(value: string, isLight: boolean): string {
-  return transformTruecolor(value, isLight, false);
-}
-
-function protectModalColors(value: string): string {
-  return transformTruecolor(value, false, true);
-}
-
-function dimTerminalOutput(
-  value: string,
-  isLight: boolean,
-  dimTextAnsi: string,
-): string {
-  return dimAnsi(value, isLight).replace(
-    INTENSITY_OR_RESET_SGR,
-    (sequence, control: string) => {
-      if (control === "0") return `${sequence}\x1b[2m${dimTextAnsi}`;
-      if (control === "39") return `${sequence}${dimTextAnsi}`;
-      return `${sequence}\x1b[2m`;
-    },
-  );
-}
-
-function brightenModalLines(lines: string[], theme: Theme): string[] {
-  if (!pluginConfig.backgroundDimming) return lines;
-  const textAnsi = protectModalColors(theme.getFgAnsi("text"));
-  return lines.map((line) => {
-    const bright = protectModalColors(line).replace(
-      INTENSITY_OR_RESET_SGR,
-      (_sequence, control: string) => {
-        if (control === "0") return `\x1b[0;22;22m${textAnsi}`;
-        if (control === "1") return "\x1b[1;1m";
-        if (control === "22") return "\x1b[22;22m";
-        return textAnsi;
-      },
-    );
-    return `\x1b[22;22m${textAnsi}${bright}\x1b[39m\x1b[2m`;
-  });
-}
-
 function filterStashEntries(
   entries: StashEntry[],
   query: string,
@@ -1608,24 +1499,8 @@ function showBrowser(
   initialQuery = "",
   initialScope: BrowserScope = "current",
 ): Promise<BrowserAction> {
-  let restoreBackground: (() => void) | undefined;
-  // Capture synchronous UI setup failures so terminal restoration always runs.
-  return (async () => ctx.ui.custom<BrowserAction>(
+  return ctx.ui.custom<BrowserAction>(
     (tui, theme, _keybindings, done) => {
-      if (pluginConfig.backgroundDimming) {
-        const originalWrite = tui.terminal.write;
-        const dimTextAnsi = dimAnsi(theme.getFgAnsi("text"), theme.isLight);
-        tui.terminal.write = (data: string) => {
-          const uniformlyDimmed = dimTerminalOutput(data, theme.isLight, dimTextAnsi);
-          originalWrite.call(tui.terminal, `\x1b[2m${dimTextAnsi}${uniformlyDimmed}`);
-        };
-        restoreBackground = () => {
-          tui.terminal.write = originalWrite;
-          originalWrite.call(tui.terminal, "\x1b[0m");
-          tui.resetDisplay();
-        };
-        tui.requestRender();
-      }
       const searchInput = new Input();
       searchInput.prompt = "/";
       searchInput.setValue(initialQuery);
@@ -1787,7 +1662,7 @@ function showBrowser(
           }
         },
         render(width: number) {
-          const terminalRows = Math.max(1, tui.terminal.rows);
+          const terminalRows = Math.max(1, tui.terminal.rows - 2);
           const renderWidth = Math.max(1, width);
           const activeScopeLabel = scope === "current" ? "This chat" : "All chats";
           const entry = selectedEntry();
@@ -1929,20 +1804,17 @@ function showBrowser(
                 : `${searchIcon} / search · g ${scope === "current" ? "all chats" : "this chat"}`;
             if (!entry) {
               const noCurrentStashes = emptyCurrent;
-              return brightenModalLines(
-                [
-                  theme.fg("accent", header),
-                  truncateToWidth(searchLine, renderWidth, ""),
-                  theme.fg(
-                    "muted",
-                    noCurrentStashes ? "No stashes in this chat" : "No matching prompts",
-                  ),
-                  ...(noCurrentStashes && entries.length > 0
-                    ? [theme.fg("dim", `${entries.length} elsewhere · press g`)]
-                    : []),
-                ].slice(0, terminalRows),
-                theme,
-              );
+              return [
+                theme.fg("accent", header),
+                truncateToWidth(searchLine, renderWidth, ""),
+                theme.fg(
+                  "muted",
+                  noCurrentStashes ? "No stashes in this chat" : "No matching prompts",
+                ),
+                ...(noCurrentStashes && entries.length > 0
+                  ? [theme.fg("dim", `${entries.length} elsewhere · press g`)]
+                  : []),
+              ].slice(0, terminalRows);
             }
             const visiblePreviewRows = Math.max(0, terminalRows - 2);
             previewRows = Math.max(1, visiblePreviewRows);
@@ -1950,14 +1822,11 @@ function showBrowser(
             const maxPreviewOffset = Math.max(0, model.totalRows - previewRows);
             previewOffset = Math.min(previewOffset, maxPreviewOffset);
             const page = previewPage(model, previewOffset, visiblePreviewRows);
-            return brightenModalLines(
-              [
-                theme.fg("accent", header),
-                truncateToWidth(searchLine, renderWidth, ""),
-                ...page.map((line) => truncateToWidth(line, renderWidth, "")),
-              ].slice(0, terminalRows),
-              theme,
-            );
+            return [
+              theme.fg("accent", header),
+              truncateToWidth(searchLine, renderWidth, ""),
+              ...page.map((line) => truncateToWidth(line, renderWidth, "")),
+            ].slice(0, terminalRows);
           }
 
           const frame = createFrame(theme, renderWidth);
@@ -2057,7 +1926,7 @@ function showBrowser(
               frame.row(` ${browserFooter}`),
               frame.bottom(),
             );
-            return brightenModalLines(lines, theme);
+            return lines;
           }
 
           const promptFooterRows = entry ? 2 : 0;
@@ -2138,12 +2007,12 @@ function showBrowser(
             );
           }
           lines.push(frame.row(` ${browserFooter}`), frame.bottom());
-          return brightenModalLines(lines, theme);
+          return lines;
         },
       };
     },
     POPUP_OPTIONS,
-  ))().finally(() => restoreBackground?.());
+  );
 }
 
 function loadEntriesForUi(ctx: ExtensionContext): StashEntry[] {

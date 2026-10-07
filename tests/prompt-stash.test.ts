@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -19,11 +19,15 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@oh-my-pi/pi-coding-
 import type { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components";
 import type * as Tui from "@oh-my-pi/pi-tui";
 import type * as PopupUi from "../extensions/ui";
+import type * as ExternalEditor from "@oh-my-pi/pi-coding-agent/utils/external-editor";
 
 let visibleWidth: typeof Tui.visibleWidth;
 let createFrame: typeof PopupUi.createFrame;
 let extensionIcon: typeof PopupUi.extensionIcon;
 let selectOption: typeof PopupUi.selectOption;
+let externalEditor: typeof ExternalEditor;
+let restoreEditors: (() => void) | undefined;
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 const agentDir = mkdtempSync(join(tmpdir(), "prompt-stash-test-"));
 const TEST_SESSION_ID = randomUUID();
@@ -60,7 +64,7 @@ function browserComponent(
   done: Function,
   terminal = { rows: 60, write: (_data: string) => {} },
 ) {
-  return factory({ terminal, requestRender() {}, resetDisplay() {} }, TEST_THEME, undefined, done);
+  return factory({ terminal, requestRender() {} }, TEST_THEME, undefined, done);
 }
 
 const projectConfigDir = join(agentDir, ".omp");
@@ -113,6 +117,7 @@ beforeAll(async () => {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   // Static SDK imports would cache paths before the test profile is bound.
   ({ visibleWidth } = await import("@oh-my-pi/pi-tui"));
+  externalEditor = await import("@oh-my-pi/pi-coding-agent/utils/external-editor");
   ({ createFrame, extensionIcon, selectOption } = await import("../extensions/ui"));
   const id = randomUUID();
   const stashedAt = new Date().toISOString();
@@ -136,7 +141,7 @@ beforeAll(async () => {
     })}\n`,
     { mode: 0o600 },
   );
-  writeSettings({ "Dim background": true, "Time format": "12-hour clock" });
+  writeSettings({ "Time format": "12-hour clock" });
   // Import after setting the agent-dir override so the test never touches the user's stash.
   const { default: promptStash } = await import("../extensions/prompt-stash.ts");
   const api = {
@@ -154,7 +159,21 @@ beforeAll(async () => {
   await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
 });
 
-afterAll(() => rmSync(agentDir, { recursive: true, force: true }));
+beforeEach(() => {
+  const command = spyOn(externalEditor, "getEditorCommand").mockImplementation(
+    () => process.env.VISUAL?.trim() || process.env.EDITOR?.trim() || undefined,
+  );
+  const editor = spyOn(externalEditor, "openInEditor").mockImplementation(async () => {
+    throw new Error("External editors are disabled in browser tests");
+  });
+  restoreEditors = () => { command.mockRestore(); editor.mockRestore(); };
+});
+afterEach(() => restoreEditors?.());
+afterAll(() => {
+  if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  rmSync(agentDir, { recursive: true, force: true });
+});
 
 test("rejects linked storage directories on every platform", async () => {
   const dir = join(agentDir, "prompt-stash");
@@ -183,91 +202,6 @@ test("rejects linked storage directories on every platform", async () => {
   }
 });
 
-test("restores the terminal writer when browser setup throws", async () => {
-  for (const failure of ["custom", "render"] as const) {
-    const writes: string[] = [];
-    const originalWrite = (data: string) => writes.push(data);
-    const terminal = { rows: 30, write: originalWrite };
-    let renderCalls = 0;
-    let resetCalls = 0;
-    const notifications: string[] = [];
-    const context = {
-      cwd: process.cwd(),
-      mode: "tui",
-      sessionManager: TEST_SESSION_MANAGER,
-      ui: {
-        custom(factory: Function) {
-          factory(
-            {
-              terminal,
-              requestRender() {
-                renderCalls += 1;
-                if (failure === "render" && renderCalls === 1) throw new Error("render failed");
-              },
-              resetDisplay() {
-                resetCalls += 1;
-              },
-            },
-            TEST_THEME,
-            undefined,
-            () => {},
-          );
-          throw new Error("custom failed");
-        },
-        getEditorText: () => "",
-        notify(message: string) {
-          notifications.push(message);
-        },
-      },
-    } as unknown as ExtensionContext;
-
-    await stashCommand.handler("", context);
-
-    expect(terminal.write).toBe(originalWrite);
-    expect(writes).toContain("\x1b[0m");
-    expect(resetCalls).toBe(1);
-    expect(notifications.at(-1)).toStartWith("OMS failed:");
-  }
-});
-
-test("fully resets and repaints the terminal after a normal close", async () => {
-  const writes: string[] = [];
-  const originalWrite = (data: string) => writes.push(data);
-  const terminal = { rows: 30, write: originalWrite };
-  let resetCalls = 0;
-  const context = {
-    cwd: agentDir,
-    mode: "tui",
-    sessionManager: TEST_SESSION_MANAGER,
-    ui: {
-      custom(factory: Function) {
-        const { promise, resolve } = Promise.withResolvers<unknown>();
-        const component = factory(
-          {
-            terminal,
-            requestRender() {},
-            resetDisplay() {
-              resetCalls += 1;
-            },
-          },
-          TEST_THEME,
-          undefined,
-          resolve,
-        );
-        component.handleInput("\u001b");
-        return promise;
-      },
-      getEditorText: () => "",
-      notify() {},
-    },
-  } as unknown as ExtensionContext;
-
-  await stashCommand.handler("", context);
-
-  expect(terminal.write).toBe(originalWrite);
-  expect(writes).toContain("\x1b[0m");
-  expect(resetCalls).toBe(1);
-});
 
 test("search Enter restores and q queues without an apply step", async () => {
   for (const [key, expected] of [
@@ -487,14 +421,14 @@ test("switches exact timestamps between 12-hour and 24-hour clocks", async () =>
   await stashCommand.handler("restore", context);
   expect(notifications.at(-1)).toMatch(/\b(?:AM|PM)\b/i);
 
-  writeSettings({ "Dim background": true, "Time format": "24-hour clock" });
+  writeSettings({ "Time format": "24-hour clock" });
   await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
   editor = "";
   await stashCommand.handler("restore", context);
 
   expect(notifications.at(-1)).not.toMatch(/\b(?:AM|PM)\b/i);
   expect(notifications.at(-1)).toMatch(/\d{2}:\d{2}:\d{2}/);
-  writeSettings({ "Dim background": true, "Time format": "12-hour clock" });
+  writeSettings({ "Time format": "12-hour clock" });
   await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
 });
 
@@ -519,7 +453,6 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
           {
             terminal: { rows: 60, write: () => {} },
             requestRender() {},
-            resetDisplay() {},
             stop() {
               stopCalls += 1;
             },
@@ -555,7 +488,6 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
 
   try {
     writeSettings({
-      "Dim background": true,
       "Time format": "12-hour clock",
       "Editor command": "",
     });
@@ -575,7 +507,6 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
     editorCalls = 0;
     editedValue = "should not be used";
     writeSettings({
-      "Dim background": true,
       "Time format": "12-hour clock",
       "Editor command": "false",
     });
@@ -589,7 +520,7 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
     else process.env.VISUAL = previousVisual;
     if (previousEditor === undefined) delete process.env.EDITOR;
     else process.env.EDITOR = previousEditor;
-    writeSettings({ "Dim background": true, "Time format": "12-hour clock" });
+    writeSettings({ "Time format": "12-hour clock" });
     await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
   }
 });
@@ -978,7 +909,6 @@ test("never deletes another writer's replacement temp after an edit collision", 
           {
             terminal: { rows: 60, write: () => {} },
             requestRender() {},
-            resetDisplay() {},
             stop() {},
             start() {},
           },
@@ -1044,7 +974,6 @@ test("preserves both results when concurrent editors start from one stash revisi
             {
               terminal: { rows: 60, write: () => {} },
               requestRender() {},
-              resetDisplay() {},
               stop() {},
               start() {},
             },
@@ -1194,7 +1123,6 @@ test("preserves concurrent edits that begin from one recoverable temp", async ()
             {
               terminal: { rows: 60, write: () => {} },
               requestRender() {},
-              resetDisplay() {},
               stop() {},
               start() {},
             },
@@ -1570,7 +1498,6 @@ test("expires only old unlocked normal stashes", async () => {
 
   try {
     writeSettings({
-      "Dim background": true,
       "Time format": "12-hour clock",
       "Retention days": 1,
     });
@@ -1584,7 +1511,6 @@ test("expires only old unlocked normal stashes", async () => {
 
     const indefinite = ageFixture(writeStashFixture("indefinite retained stash"));
     writeSettings({
-      "Dim background": true,
       "Time format": "12-hour clock",
       "Retention days": 0,
     });
@@ -1592,7 +1518,7 @@ test("expires only old unlocked normal stashes", async () => {
     expect(existsSync(indefinite)).toBeTrue();
     rmSync(indefinite, { force: true });
   } finally {
-    writeSettings({ "Dim background": true, "Time format": "12-hour clock" });
+    writeSettings({ "Time format": "12-hour clock" });
     await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
     for (const path of [expired, locked, preserved, recovery, fresh.path]) {
       rmSync(path, { force: true });
@@ -1744,7 +1670,6 @@ test("keeps quota-preserved conflict copies visible in the browser", async () =>
           {
             terminal: { rows: 60, write: () => {} },
             requestRender() {},
-            resetDisplay() {},
             stop() {},
             start() {},
           },
@@ -1780,7 +1705,6 @@ test("keeps quota-preserved conflict copies visible in the browser", async () =>
 
   try {
     writeSettings({
-      "Dim background": true,
       "Time format": "12-hour clock",
       "Editor command": "",
     });
@@ -1798,7 +1722,7 @@ test("keeps quota-preserved conflict copies visible in the browser", async () =>
     else process.env.VISUAL = previousVisual;
     if (previousEditor === undefined) delete process.env.EDITOR;
     else process.env.EDITOR = previousEditor;
-    writeSettings({ "Dim background": true, "Time format": "12-hour clock" });
+    writeSettings({ "Time format": "12-hour clock" });
     await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
   }
 });
@@ -1955,13 +1879,13 @@ test("moves shared popup selection by arrow, home, end and page keys", async () 
   expect(fixture.component.render(80).join("\n")).toContain("> Option 49");
   fixture.component.handleInput("\u001b[H");
   fixture.component.handleInput("\u001b[6~");
-  expect(fixture.component.render(80).join("\n")).toContain("> Option 05");
+  expect(fixture.component.render(80).join("\n")).toContain("> Option 03");
   fixture.component.handleInput("\u001b[5~");
   expect(fixture.component.render(80).join("\n")).toContain("> Option 00");
   fixture.component.handleInput("\u001b[6~");
   fixture.component.handleInput("\u001b[B");
   fixture.component.handleInput("\r");
-  expect(await fixture.result).toBe("Option 06");
+  expect(await fixture.result).toBe("Option 04");
 });
 
 test("searches shared popup options without replacing the composer draft", async () => {
@@ -2011,7 +1935,7 @@ test("keeps shared popup navigation usable in small terminals", async () => {
     for (const width of [1, 4, 32]) {
       const fixture = optionPopupFixture(["Alpha", "Beta"], rows);
       const lines = fixture.component.render(width);
-      expect(lines.length).toBeLessThanOrEqual(rows);
+      expect(lines.length).toBeLessThanOrEqual(Math.max(1, rows - 2));
       for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
       fixture.component.handleInput("\u001b[B");
       fixture.component.handleInput("\r");
@@ -2039,7 +1963,7 @@ test("honors Show icons while using contextual Nerd glyphs in the stash browser"
   } as unknown as ExtensionContext;
   try {
     for (const showIcons of [true, false]) {
-      writeSettings({ "Show icons": showIcons, "Dim background": false, "Browser layout": "Stacked" });
+      writeSettings({ "Show icons": showIcons, "Browser layout": "Stacked" });
       await refreshConfig?.({}, context);
       await stashCommand.handler("", context);
       if (showIcons) {
@@ -2052,7 +1976,7 @@ test("honors Show icons while using contextual Nerd glyphs in the stash browser"
       }
     }
   } finally {
-    writeSettings({ "Dim background": true, "Time format": "12-hour clock" });
+    writeSettings({ "Time format": "12-hour clock" });
     await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
   }
 });

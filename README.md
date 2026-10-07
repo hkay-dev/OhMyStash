@@ -18,21 +18,23 @@ OMP's plugin manager uses Bun for package installation:
 brew install bun
 ```
 
-Install OhMyStash directly from GitHub:
+Version 1.10.0 runs on our shared plugin SDK/framework. It gives plugin popups one presentation contract through OMP's modal API and `@hkay-dev/ohmystash/ui`, including dimming, opaque surfaces, and the black outer border.
+
+Use the matching OMP `18.7.1-modal.0` build from the [1.10.0 release assets](https://github.com/hkay-dev/OhMyStash/releases/tag/v1.10.0). The bundled executable is for macOS Apple Silicon. The release also includes the SDK source patch for other builds. These companion SDK packages aren't npm registry releases.
+
+From the `v1.10.0` checkout, download the four SDK archives before installing:
 
 ```sh
-omp plugin install github:hkay-dev/OhMyStash
+gh release download v1.10.0 --repo hkay-dev/OhMyStash --pattern 'oh-my-pi-pi-*.tgz' --dir artifacts
+bun install --frozen-lockfile --ignore-scripts
+omp plugin link .
 ```
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
-OhMyStash requires OMP 18.2.5 or newer. Its image attachment helper uses the TUI package's `prompt/image-format` export. Version 1.9.0 was loaded from an installed npm archive in compiled OMP 18.6.1; stash/restore, the browser, and the native plugin settings page were exercised. On macOS, 48 tests passed and 12 Windows-only tests were skipped. No model requests were made.
+The image attachment helper uses the TUI package's `prompt/image-format` export. Version 1.9.0 was loaded from an installed npm archive in compiled OMP 18.6.1; stash/restore, the browser, and the native plugin settings page were exercised. On macOS, 48 tests passed and 12 Windows-only tests were skipped. No model requests were made.
 
-To update OhMyStash after a new release:
-
-```sh
-omp plugin install --force github:hkay-dev/OhMyStash
-```
+For this release, update the matching SDK and package archives together using the release assets. A bare Git plugin installation does not supply the companion SDK graph.
 
 Check the installed package and extension manifest with:
 
@@ -153,12 +155,21 @@ Available settings:
 - **Maximum body rows**
 - **Time format**: 12-hour or 24-hour
 - **Retention days**: `0` keeps stashes indefinitely
-- **Dim background**
-- **Background brightness (%)**
-- **Background saturation (%)**
 - **Show icons**, controlling contextual Nerd Font glyphs in the stash browser
 
 Retention removes only expired, unlocked, normal stashes. Locked stashes, conflict copies, and recovery entries do not expire.
+
+Popup appearance is shared across plugins and builtin dialogs through OMP's `tui.modal` record in `config.yml`:
+
+```yaml
+tui:
+  modal:
+    dimBackground: true
+    brightness: 0.62
+    saturation: 0
+```
+
+Brightness and saturation range from `0` to `1`. The active popup stays in color and has an opaque interior and a one-cell black ring outside its accent frame. Explicit values from the three old OhMyStash backdrop settings migrate automatically into the same global or project config layer; existing central values take precedence.
 
 All the same settings are available from the CLI:
 
@@ -167,7 +178,6 @@ omp plugin config list @hkay-dev/ohmystash
 omp plugin config set @hkay-dev/ohmystash "Browser layout" "Stacked"
 omp plugin config set @hkay-dev/ohmystash "Retention days" 30
 omp plugin config set @hkay-dev/ohmystash "Editor command" "code --wait"
-omp plugin config set @hkay-dev/ohmystash "Dim background" false
 omp plugin config delete @hkay-dev/ohmystash "Browser layout"
 ```
 
@@ -241,24 +251,33 @@ A separate filesystem backup is still required for hardware failure, filesystem 
 
 ## Development
 
+Use Bun 1.4.2. Download the companion SDK archives from the [1.10.0 release](https://github.com/hkay-dev/OhMyStash/releases/tag/v1.10.0). The ignored `artifacts/` directory must contain:
+
+- `oh-my-pi-pi-coding-agent-18.7.1-modal.0.tgz`
+- `oh-my-pi-pi-tui-18.7.1-modal.0.tgz`
+- `oh-my-pi-pi-utils-18.7.1-modal.0.tgz`
+- `oh-my-pi-pi-wire-18.7.1-modal.0.tgz`
+
+Root overrides bind the SDK archive graph, and `bun.lock` records its integrity hashes. Keep the archives with the checkout when moving this build.
+
 ```sh
-bun install
+bun install --frozen-lockfile --ignore-scripts
 bun run check
 bun test
 bun run benchmark:cross-chat
 ```
 
-OhMyStash targets OMP 18.2.5 or newer. The extension entry point remains `extensions/prompt-stash.ts`.
+OhMyStash requires the matching modal-enabled OMP build and SDK, currently `18.7.1-modal.0`. The extension entry point remains `extensions/prompt-stash.ts`.
 
 ### Shared popup UI
 
-Version 1.9.0 exports the common popup helpers at `@hkay-dev/ohmystash/ui`:
+Version 1.10.0 exports the common popup helpers at `@hkay-dev/ohmystash/ui`:
 
 - `createFrame(theme, width)` returns square, accent-colored `top`, `row`, `divider`, and `bottom` renderers, with an embedded title and terminal-width-safe content.
 - `fitToWidth(text, width)` clips and pads text to the requested visible terminal width, accounting for ANSI styling and wide characters.
 - `extensionIcon(key)` reads the Nerd Font symbol preset and returns an empty string for an unknown key. It does not change the host symbol preset or read a plugin's Show icons setting; callers apply their own setting.
 - `selectOption(ctx, title, options, iconKey?)` opens a searchable, keyboard-navigable option overlay and resolves to the selected string, or `undefined` on cancellation, leaving the host composer and attachments untouched.
-- `POPUP_OPTIONS` supplies `overlay: true` with a centered `90%` width and `100%` maximum height.
+- `POPUP_OPTIONS` supplies `overlay: true` with a centered `90%` width, `100%` maximum height, and renderer-owned `modal: true` presentation.
 
 Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module. Custom popups use the square frame; `/settings` → **Plugins** pages retain OMP's native settings chrome.
 

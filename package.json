@@ -1,8 +1,9 @@
 {
   "name": "@hkay-dev/ohmystash",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.4.2",
   "exports": {
     "./ui": "./extensions/ui.ts"
   },
@@ -13,24 +14,30 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "bun test --timeout 60000 --preload ./tests/host-preload.ts ./tests",
+    "test": "bun test --timeout 60000 ./tests",
     "benchmark:cross-chat": "bun run benchmarks/cross-chat.ts",
     "capture:browser": "bun run showcase/patch-wterm-cells.ts && OMS_CAPTURE_FEATURE=scope tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-browser.cast && bun run showcase/check-border-alignment.ts assets/ohmystash-browser.png && OMS_CAPTURE_FEATURE=search tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-search.cast && OMS_CAPTURE_FEATURE=queue-draft tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-queue-draft.cast && OMS_CAPTURE_FEATURE=submit-queue tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-submit-queue.cast && OMS_CAPTURE_FEATURE=attachments tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-attachments.cast && OMS_CAPTURE_FEATURE=editing tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-editing.cast && OMS_CAPTURE_FEATURE=locking-deletion tcut showcase/ohmystash-browser.video.ts --force --cast /tmp/ohmystash-locking-deletion.cast",
     "capture:settings": "bun run showcase/patch-wterm-cells.ts && tcut showcase/ohmystash-settings.video.ts --force",
     "capture:all": "bun run capture:browser && bun run capture:settings"
   },
   "peerDependencies": {
-    "@oh-my-pi/pi-ai": ">=18.2.5",
-    "@oh-my-pi/pi-coding-agent": ">=18.2.5",
-    "@oh-my-pi/pi-tui": ">=18.2.5"
+    "@oh-my-pi/pi-ai": ">=18.7.0",
+    "@oh-my-pi/pi-coding-agent": "18.7.1-modal.0",
+    "@oh-my-pi/pi-tui": "18.7.1-modal.0"
   },
   "devDependencies": {
-    "@oh-my-pi/pi-ai": "18.3.0",
-    "@oh-my-pi/pi-coding-agent": "18.3.0",
-    "@oh-my-pi/pi-tui": "18.3.0",
+    "@oh-my-pi/pi-ai": "18.7.0",
+    "@oh-my-pi/pi-coding-agent": "18.7.1-modal.0",
+    "@oh-my-pi/pi-tui": "18.7.1-modal.0",
     "@types/bun": "latest",
     "termcut": "1.0.0",
     "typescript": "latest"
+  },
+  "overrides": {
+    "@oh-my-pi/pi-coding-agent": "file:artifacts/oh-my-pi-pi-coding-agent-18.7.1-modal.0.tgz",
+    "@oh-my-pi/pi-tui": "file:artifacts/oh-my-pi-pi-tui-18.7.1-modal.0.tgz",
+    "@oh-my-pi/pi-utils": "file:artifacts/oh-my-pi-pi-utils-18.7.1-modal.0.tgz",
+    "@oh-my-pi/pi-wire": "file:artifacts/oh-my-pi-pi-wire-18.7.1-modal.0.tgz"
   },
   "omp": {
     "name": "OhMyStash",
@@ -89,27 +96,6 @@
         "max": 3650,
         "step": 1,
         "description": "Delete unlocked normal stashes older than this many days. Set 0 to keep them indefinitely. Locked, conflict, and recovery entries are never expired."
-      },
-      "Dim background": {
-        "type": "boolean",
-        "default": true,
-        "description": "Reduce the prominence of the OMP session behind the prompt browser."
-      },
-      "Background brightness (%)": {
-        "type": "number",
-        "default": 62,
-        "min": 30,
-        "max": 95,
-        "step": 5,
-        "description": "Set how much background brightness remains while the prompt browser is open."
-      },
-      "Background saturation (%)": {
-        "type": "number",
-        "default": 55,
-        "min": 0,
-        "max": 100,
-        "step": 5,
-        "description": "Set how much background color remains while the prompt browser is open."
       },
       "Show icons": {
         "type": "boolean",

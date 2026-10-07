@@ -1,10 +1,14 @@
 import type { ExtensionContext, ExtensionCustomOptions, Theme } from "@oh-my-pi/pi-coding-agent";
-import { fuzzyFilter, Input, Key, matchesKey, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { fuzzyFilter, Input, Key, matchesKey, resolveModalPresentation, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { SYMBOL_PRESETS, type SymbolKey } from "@oh-my-pi/pi-tui/theme/symbols";
+
+if (typeof resolveModalPresentation !== "function") {
+  throw new Error("OhMyStash popups require the modal-enabled OMP build (18.7.1-modal.0).");
+}
 
 export const POPUP_OPTIONS = {
   overlay: true,
-  overlayOptions: { anchor: "center", width: "90%", maxHeight: "100%" },
+  overlayOptions: { anchor: "center", width: "90%", maxHeight: "100%", modal: true },
 } as const satisfies ExtensionCustomOptions;
 
 export function extensionIcon(key: string): string {
@@ -57,7 +61,7 @@ export function selectOption(
     searchInput.focused = true;
     let filtered = options;
     let selected = 0;
-    let pageRows = Math.max(1, Math.min(12, tui.terminal.rows - 5));
+    let pageRows = Math.max(1, Math.min(12, tui.terminal.rows - 7));
     const glyph = iconKey ? extensionIcon(iconKey) : "";
     const popupTitle = glyph ? `${glyph} ${title}` : title;
     const moveSelection = (index: number) => {
@@ -106,7 +110,7 @@ export function selectOption(
       },
       render(width: number) {
         const renderWidth = Math.max(1, Math.floor(width));
-        const terminalRows = Math.max(1, tui.terminal.rows);
+        const terminalRows = Math.max(1, tui.terminal.rows - 2);
         const contentWidth = Math.max(0, renderWidth - 2);
         const hints = contentWidth >= 64
           ? [keyHint("↑↓", "Move"), keyHint("PgUp/PgDn", "Page"), keyHint("Enter", "Select"), keyHint("Esc", "Close")].join("  ")

@@ -1,12 +1,23 @@
 # Changelog
 
-## Unreleased
+## 1.10.0 - 2026-10-07
 
 ### Changed
+
+- Base OhMyStash on our shared plugin SDK/framework. The renderer's modal API and `@hkay-dev/ohmystash/ui` give our plugins one popup contract and shared presentation defaults.
 
 - Make the existing settings capture require a real packaged artifact and matching installed compiled OMP, with private HOME/XDG/agent roots instead of copied live configuration.
 - Exercise stash/restore and browser shortcuts, retained synthetic storage and plugin settings without model inference. Keep source/fixture media separate from packaged consumer evidence.
 - Install the packaged archive and exact matching SDK peers in the isolated consumer before registration; linking extracted bytes alone omits runtime dependencies.
+- Move popup dimming into OMP's shared renderer, covering committed visible history, ANSI color formats, and native surfaces without wrapping terminal writes or clearing history.
+- Use the shared opaque modal surface and one-cell black outer ring for the browser and selector dialogs. Backdrop settings now live in `tui.modal`; explicit legacy values migrate automatically.
+- Require the matching modal-enabled `18.7.1-modal.0` SDK and OMP build.
+
+### Checks
+
+- 46 OhMyStash tests passed on macOS, with 12 Windows-only skips. The TypeScript check passed against the matching SDK archives.
+- The shared SDK passed 444 tests. The installed compiled OMP walkthrough covered all three popup plugins, builtin dialogs, resize, nested popups, cancellation, and editor preservation.
+- ANSI and native Tern visuals were checked. Native restoration was checked through the recorded close frame. No model inference was performed.
 
 ## 1.9.0 - 2026-10-04
 
