@@ -18,7 +18,7 @@ OMP's plugin manager uses Bun for package installation:
 brew install bun
 ```
 
-Version 1.10.1 works with stock OMP 18.8.3. The browser and option pickers open inline at the bottom, in the composer area, like OMP's built-in Switch Model dialog. They keep square, accent-colored frames without dimming, desaturation, or a full-screen blackout.
+Version 1.10.2 works with stock OMP 18.8.3. The browser and option pickers open inline at the bottom, in the composer area, like OMP's built-in Switch Model dialog. They keep square, accent-colored frames without dimming, desaturation, or a full-screen blackout.
 
 Install directly from GitHub:
 
@@ -26,7 +26,7 @@ Install directly from GitHub:
 omp plugin install github:hkay-dev/OhMyStash
 ```
 
-OMP installs the standard SDK dependencies automatically. No custom OMP executable, SDK archives, or separate installer is needed. To pin this release, use `github:hkay-dev/OhMyStash#v1.10.1` instead.
+OMP installs the standard SDK dependencies automatically. No custom OMP executable, SDK archives, or separate installer is needed. To pin this release, use `github:hkay-dev/OhMyStash#v1.10.2` instead.
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
@@ -252,18 +252,24 @@ bun test
 bun run benchmark:cross-chat
 ```
 
-OhMyStash 1.10.1 runs on stock OMP 18.8.3. The extension entry point remains `extensions/prompt-stash.ts`.
+OhMyStash 1.10.2 runs on stock OMP 18.8.3. The extension entry point remains `extensions/prompt-stash.ts`.
 
 ### Shared inline UI
 
-Version 1.10.1 exports the common inline picker helpers at `@hkay-dev/ohmystash/ui`, using only stock public SDK exports:
+Version 1.10.2 exports the common inline picker helpers at `@hkay-dev/ohmystash/ui`, using only stock public SDK exports:
 
 - `createFrame(theme, width)` returns square, accent-colored `top`, `row`, `divider`, and `bottom` renderers, with an embedded title and terminal-width-safe content.
 - `fitToWidth(text, width)` clips and pads text to the requested visible terminal width, accounting for ANSI styling and wide characters.
 - `extensionIcon(key)` reads the Nerd Font symbol preset and returns an empty string for an unknown key. It does not change the host symbol preset or read a plugin's Show icons setting; callers apply their own setting.
 - `selectOption(ctx, title, options, iconKey?)` opens a searchable, keyboard-navigable inline picker and resolves to the selected string, or `undefined` on cancellation, leaving the host composer and attachments untouched.
 
-Custom pickers use `ctx.ui.custom(factory)` without overlay options, so OMP mounts them in its standard inline editor area and restores the composer on completion. Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Companion plugins can use `github:hkay-dev/OhMyStash#v1.10.1`; OMP installs declared dependencies through its normal package manager. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module.
+Custom pickers use `ctx.ui.custom(factory)` without overlay options, so OMP mounts them in its standard inline editor area and restores the composer on completion. Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Companion plugins can use `github:hkay-dev/OhMyStash#v1.10.2`; OMP installs declared dependencies through its normal package manager. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module.
+
+### Install archive
+
+The install archive has `package.json` and the four extension runtime files. Full documentation, demo media, tests, benchmarks, and capture tools stay in the repository.
+
+The package `files` allowlist limits npm and Bun packs. GitHub downloads also use `.gitattributes` export rules because Bun's Git dependency installer does not apply the `files` allowlist. `git archive` uses the same export rules when preparing a release package.
 
 ### Packaged installed-runtime proof
 
@@ -273,7 +279,9 @@ From this repository, with the existing capture dependencies available:
 
 ```sh
 export OMS_CAPTURE_OUTPUT="$(mktemp -d "${TMPDIR:-/tmp}/ohmystash-proof.XXXXXX")"
-artifact_name="$(npm pack --ignore-scripts --pack-destination "$OMS_CAPTURE_OUTPUT")"
+mkdir "$OMS_CAPTURE_OUTPUT/source"
+git archive HEAD | tar -x -C "$OMS_CAPTURE_OUTPUT/source"
+artifact_name="$(npm pack "$OMS_CAPTURE_OUTPUT/source" --ignore-scripts --pack-destination "$OMS_CAPTURE_OUTPUT")"
 export OMS_CAPTURE_ARTIFACT="$OMS_CAPTURE_OUTPUT/$artifact_name"
 export OMS_CAPTURE_OMP="$(command -v omp)"
 export OMS_CAPTURE_OMP_VERSION=18.8.3
@@ -283,7 +291,7 @@ npm exec -- tcut doctor "$OMS_CAPTURE_OUTPUT/ohmystash-release.cast"
 ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_name,width,height,avg_frame_rate -of json "$OMS_CAPTURE_OUTPUT/ohmystash-release.mp4"
 ```
 
-`npm pack` above produces an archive of the current working tree without lifecycle scripts. For an approved release artifact, set `OMS_CAPTURE_ARTIFACT` to that archive instead. Record the authored revision/working-tree state separately from its SHA-256; a local pack is not publication evidence. The helper requires the exact expected version and a compiled executable, with no source-launcher fallback.
+`git archive` above exports the committed revision's runtime files, then `npm pack` creates the install archive without lifecycle scripts. For an approved release artifact, set `OMS_CAPTURE_ARTIFACT` to that archive instead. Record the revision and SHA-256; a local pack is not publication evidence. The helper requires the exact expected version and a compiled executable, with no source-launcher fallback.
 
 Before OMP can import any extension, the helper clears inherited profile/credential/session environment values and creates private HOME, agent, cwd, temporary and XDG roots. It writes reviewed startup/background-disable and display settings plus the catalog described below, never live config, models, auth or stashes. It installs the archive and exact matching-version SDK peers into a disposable consumer with Bun lifecycle scripts disabled, records peer versions, registers the installed package with isolated `omp plugin link`, and starts compiled OMP without `-e` or `--no-extensions`. Linking extracted bytes alone doesn't supply runtime dependencies such as `pi-tui`. Dependency installation may fetch public packages; no prompt is submitted.
 
