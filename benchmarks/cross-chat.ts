@@ -69,7 +69,6 @@ const writeLayout = (layout: string) =>
       settings: {
         "@hkay-dev/ohmystash": {
           "Browser layout": layout,
-          "Dim background": true,
           "Maximum body rows": 36,
         },
       },

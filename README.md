@@ -18,7 +18,7 @@ OMP's plugin manager uses Bun for package installation:
 brew install bun
 ```
 
-Version 1.10.2 works with stock OMP 18.8.3. The browser and option pickers open inline at the bottom, in the composer area, like OMP's built-in Switch Model dialog. They keep square, accent-colored frames without dimming, desaturation, or a full-screen blackout.
+Version 1.10.3 works with stock OMP 18.8.3. The browser and option pickers open in OMP's stock bottom overlay, like the built-in Switch Model dialog. They span the full width with square, accent-colored frames and no dimming, and they leave your draft, caret, and undo history untouched.
 
 Install directly from GitHub:
 
@@ -26,11 +26,9 @@ Install directly from GitHub:
 omp plugin install github:hkay-dev/OhMyStash
 ```
 
-OMP installs the standard SDK dependencies automatically. No custom OMP executable, SDK archives, or separate installer is needed. To pin this release, use `github:hkay-dev/OhMyStash#v1.10.2` instead.
+OMP installs the standard SDK dependencies automatically. No custom OMP executable, SDK archives, or separate installer is needed. To pin this release, use `github:hkay-dev/OhMyStash#v1.10.3` instead.
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
-
-The image attachment helper uses the stock TUI package's `prompt/image-format` export.
 
 To update an existing installation:
 
@@ -60,7 +58,7 @@ Press `Alt+Shift+S` to open the full stash browser. The browser supports preview
 
 Considerable work went into the browser's visual hierarchy, color treatment, spacing, and keyboard flow.
 
-The browser uses the bottom-docked inline editor area, with square, accent-colored borders and an embedded title. Closing it restores the composer and its attachments. Contextual Nerd Font glyphs honor **Show icons** without changing OMP's global symbol preset. Use a Nerd Font or symbols fallback to display them. This shared frame does not replace the browser's mature search, chat scope, queue, attachment, edit, lock, recovery, retention, or adaptive-layout behavior.
+The browser opens in OMP's stock bottom overlay, with square, accent-colored borders and an embedded title. It leaves your draft, caret, undo history, and attachments untouched. Contextual Nerd Font glyphs honor **Show icons** without changing OMP's global symbol preset. Use a Nerd Font or symbols fallback to display them. This shared frame does not replace the browser's mature search, chat scope, queue, attachment, edit, lock, recovery, retention, or adaptive-layout behavior.
 
 ## Browser capabilities
 
@@ -161,7 +159,7 @@ Available settings:
 
 Retention removes only expired, unlocked, normal stashes. Locked stashes, conflict copies, and recovery entries do not expire.
 
-Pickers use stock OMP's inline editor area. Conversation history stays in place and keeps its colors; no popup backdrop settings are needed. OMP restores the composer when a picker closes. `/settings` → **Plugins** retains OMP's native settings chrome.
+Pickers open in OMP's stock bottom overlay, like Switch Model: full width, with no dimming. Conversation history keeps its colors, so no backdrop settings are needed. Your draft, caret, and undo history stay untouched. `/settings` → **Plugins** keeps OMP's native settings chrome.
 
 All the same settings are available from the CLI:
 
@@ -252,18 +250,19 @@ bun test
 bun run benchmark:cross-chat
 ```
 
-OhMyStash 1.10.2 runs on stock OMP 18.8.3. The extension entry point remains `extensions/prompt-stash.ts`.
+OhMyStash 1.10.3 runs on stock OMP 18.8.3. The extension entry point remains `extensions/prompt-stash.ts`.
 
-### Shared inline UI
+### Shared picker UI
 
-Version 1.10.2 exports the common inline picker helpers at `@hkay-dev/ohmystash/ui`, using only stock public SDK exports:
+Version 1.10.3 exports the common picker helpers at `@hkay-dev/ohmystash/ui`, using only stock public SDK exports:
 
+- `OVERLAY_OPTIONS` is `{ overlay: true }`, the `ctx.ui.custom` options for OMP's stock bottom overlay. Like Switch Model, it spans the full width, can use every terminal row, and adds no backdrop.
 - `createFrame(theme, width)` returns square, accent-colored `top`, `row`, `divider`, and `bottom` renderers, with an embedded title and terminal-width-safe content.
 - `fitToWidth(text, width)` clips and pads text to the requested visible terminal width, accounting for ANSI styling and wide characters.
 - `extensionIcon(key)` reads the Nerd Font symbol preset and returns an empty string for an unknown key. It does not change the host symbol preset or read a plugin's Show icons setting; callers apply their own setting.
-- `selectOption(ctx, title, options, iconKey?)` opens a searchable, keyboard-navigable inline picker and resolves to the selected string, or `undefined` on cancellation, leaving the host composer and attachments untouched.
+- `selectOption(ctx, title, options, iconKey?)` opens a searchable, keyboard-navigable picker in that overlay and resolves to the selected string, or `undefined` on cancellation. The host composer's draft, caret, undo history, and attachments stay untouched.
 
-Custom pickers use `ctx.ui.custom(factory)` without overlay options, so OMP mounts them in its standard inline editor area and restores the composer on completion. Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Companion plugins can use `github:hkay-dev/OhMyStash#v1.10.2`; OMP installs declared dependencies through its normal package manager. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module.
+Custom pickers call `ctx.ui.custom(factory, OVERLAY_OPTIONS)`, so OMP shows them in the same bottom overlay as Switch Model and leaves the composer untouched underneath. Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Companion plugins can use `github:hkay-dev/OhMyStash#v1.10.3`; OMP installs declared dependencies through its normal package manager. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module.
 
 ### Install archive
 

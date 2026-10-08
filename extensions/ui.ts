@@ -1,6 +1,10 @@
-import type { ExtensionContext, Theme } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionContext, ExtensionCustomOptions, Theme } from "@oh-my-pi/pi-coding-agent";
 import { fuzzyFilter, Input, Key, matchesKey, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { SYMBOL_PRESETS, type SymbolKey } from "@oh-my-pi/pi-tui/theme/symbols";
+
+// OMP's stock bottom overlay, as Switch Model uses it: full width, up to every terminal row, no
+// backdrop. Closing it leaves the composer's text, undo history, and caret untouched.
+export const OVERLAY_OPTIONS = { overlay: true } as const satisfies ExtensionCustomOptions;
 
 export function extensionIcon(key: string): string {
   const glyph = SYMBOL_PRESETS.nerd[key as SymbolKey];
@@ -45,14 +49,13 @@ export function selectOption(
   options: string[],
   iconKey?: string,
 ): Promise<string | undefined> {
-  // OMP's inline custom UI restores the composer when the picker closes.
   return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
     const searchInput = new Input();
     searchInput.prompt = "";
     searchInput.focused = true;
     let filtered = options;
     let selected = 0;
-    let pageRows = Math.max(1, Math.min(12, tui.terminal.rows - 7));
+    let pageRows = Math.max(1, Math.min(12, tui.terminal.rows - 5));
     const glyph = iconKey ? extensionIcon(iconKey) : "";
     const popupTitle = glyph ? `${glyph} ${title}` : title;
     const moveSelection = (index: number) => {
@@ -101,7 +104,8 @@ export function selectOption(
       },
       render(width: number) {
         const renderWidth = Math.max(1, Math.floor(width));
-        const terminalRows = Math.max(1, tui.terminal.rows - 2);
+        // The overlay may fill the terminal; OMP drops taller output from the top, title first.
+        const terminalRows = Math.max(1, tui.terminal.rows);
         const contentWidth = Math.max(0, renderWidth - 2);
         const hints = contentWidth >= 64
           ? [keyHint("↑↓", "Move"), keyHint("PgUp/PgDn", "Page"), keyHint("Enter", "Select"), keyHint("Esc", "Close")].join("  ")
@@ -158,5 +162,5 @@ export function selectOption(
         return lines;
       },
     };
-  });
+  }, OVERLAY_OPTIONS);
 }

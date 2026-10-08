@@ -13,5 +13,5 @@
     "target": "ES2024",
     "types": ["bun"]
   },
-  "include": ["extensions/**/*.ts", "tests/**/*.ts"]
+  "include": ["extensions/**/*.ts", "tests/**/*.ts", "benchmarks/**/*.ts", "showcase/**/*.ts"]
 }

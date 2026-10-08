@@ -38,8 +38,8 @@ import {
   type KeyId,
   type TUI,
 } from "@oh-my-pi/pi-tui";
-import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
-import { createFrame, extensionIcon, fitToWidth } from "./ui";
+import { SYMBOL_PRESETS } from "@oh-my-pi/pi-tui/theme/symbols";
+import { createFrame, extensionIcon, fitToWidth, OVERLAY_OPTIONS } from "./ui";
 import {
   hasPrivateStoragePermissions,
   invalidatePrivateStoragePermission,
@@ -155,11 +155,14 @@ const MAX_SESSION_ID_LENGTH = 128;
 const MAX_SESSION_NAME_LENGTH = 512;
 const MAX_WORKSPACE_NAME_LENGTH = 255;
 const COLLAPSED_PASTE_TOKEN = /\[Paste #[1-9]\d*(?:,[^\]\n]*)?\]/;
-const IMAGE_TOKEN = /\[Image #[1-9]\d*(?:,[^\]\n]*)?\]/;
 const REPLACEMENT_WAIT = new Int32Array(new SharedArrayBuffer(4));
 const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const STALE_TEMP = /^\.[0-9a-f-]{36}\.tmp$/i;
 const STALE_TEMP_MS = 24 * 60 * 60 * 1000;
+// A temp written this recently may belong to a live writer that has not renamed it yet.
+const ACTIVE_TEMP_MS = 60 * 1000;
+const QUOTA_ERROR =
+  "OMS storage quota reached across all chats. Open the stash browser and press g to manage it";
 const ENTRY_CACHE = new Map<string, CachedEntry>();
 const LOCAL_TIMESTAMP_FORMATTERS = {
   "12-hour": new Intl.DateTimeFormat(undefined, {
@@ -201,6 +204,7 @@ let pluginConfig = { ...DEFAULT_CONFIG };
 const ACTIVE_EDITORS = new WeakMap<object, CustomEditor>();
 
 class EntryConflictError extends Error {}
+class StorageQuotaError extends Error {}
 
 function errorCode(cause: unknown): string | undefined {
   return cause instanceof Error && "code" in cause ? String(cause.code) : undefined;
@@ -686,15 +690,30 @@ function cleanupStaleTemps(dir: string): void {
   });
 }
 
-function storageUsage(dir: string) {
+// Removes an orphaned temp, or sets it aside like cleanupStaleTemps does, only while its
+// pathname still names the inspected file.
+function releaseTemp(path: string, inspected: Stats, setAside = false): void {
+  try {
+    const current = lstatSync(path);
+    if (current.dev !== inspected.dev || current.ino !== inspected.ino) return;
+    if (setAside) renameSync(path, `${path}.orphan`);
+    else unlinkSync(path);
+    syncDirectory(dirname(path));
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") throw error;
+  }
+}
+
+// A replacement passes its published name so the old revision is not counted beside its edit.
+function storageUsage(dir: string, replacedName?: string) {
   let count = 0;
   let bytes = 0;
   const handle = opendirSync(dir);
   try {
     for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
       if (!entry.name.endsWith(".json") && !entry.name.endsWith(".tmp")) continue;
+      if (entry.name === replacedName) continue;
       count += 1;
-      if (count > MAX_ENTRY_FILES) break;
       try {
         const stat = lstatSync(join(dir, basename(entry.name)));
         if (!stat.isSymbolicLink() && stat.isFile()) bytes += stat.size;
@@ -725,7 +744,8 @@ function loadEntriesInDirectory(dir: string): LoadResult {
   const entries: StashEntry[] = [];
   let skipped = selection.skipped;
   let totalBytes = 0;
-  const seenIds = selection.tempCount > 0 ? new Set<string>() : undefined;
+  const seenEntries = selection.tempCount > 0 ? new Map<string, StashEntry>() : undefined;
+  let recovered = false;
 
   for (const fileName of names) {
     const path = join(dir, basename(fileName));
@@ -739,6 +759,20 @@ function loadEntriesInDirectory(dir: string): LoadResult {
       const preservedFile = fileName.endsWith(".preserved.json");
       const recoveryFile = STALE_TEMP.test(fileName);
       const overflowProtected = preservedFile || recoveryFile;
+      const abandoned = recoveryFile && Date.now() - stat.mtimeMs >= ACTIVE_TEMP_MS;
+      // An empty temp is a reservation, never a stash, so it is not reported as omitted. Past the
+      // live-write window a crash orphaned it, so it is released.
+      if (recoveryFile && stat.isFile() && stat.size === 0) {
+        if (abandoned) releaseTemp(path, stat);
+        continue;
+      }
+      // Past that window an unrecoverable temp is a torn write. Setting it aside now, as
+      // cleanupStaleTemps would after a day, keeps it from blocking changes to its stash.
+      if (abandoned && stat.isFile() && hasPrivateStoragePermissions(path, stat) && !isRecoverableTemp(path)) {
+        releaseTemp(path, stat, true);
+        skipped += 1;
+        continue;
+      }
       if (
         !stat.isFile() ||
         !hasPrivateStoragePermissions(path, stat) ||
@@ -753,10 +787,10 @@ function loadEntriesInDirectory(dir: string): LoadResult {
       const fingerprint = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.mode}:${stat.uid}:${pluginConfig.timeFormat}`;
       const cached = recoveryFile ? undefined : ENTRY_CACHE.get(fileName);
       if (cached?.fingerprint === fingerprint) {
-        if (seenIds?.has(cached.entry.id)) {
+        if (seenEntries?.has(cached.entry.id)) {
           continue;
         }
-        seenIds?.add(cached.entry.id);
+        seenEntries?.set(cached.entry.id, cached.entry);
         entries.push(cached.entry);
         continue;
       }
@@ -776,8 +810,20 @@ function loadEntriesInDirectory(dir: string): LoadResult {
         skipped += 1;
         continue;
       }
-      if (seenIds?.has(persisted.id)) continue;
-      seenIds?.add(persisted.id);
+      const revision = assetHash(bytes.subarray(0, bytesRead));
+      const published = seenEntries?.get(persisted.id);
+      if (published) {
+        // A stale temp beside its published stash is an orphaned reservation. Keep differing
+        // bytes as a conflict copy, then release the pathname so it cannot block later changes.
+        if (abandoned) {
+          const differs = revision !== published.revision;
+          // A session still writing this orphan's copy releases the orphan once the copy lands.
+          if (differs && !saveOrphanCopy(dir, persisted, revision, stat)) continue;
+          releaseTemp(path, stat);
+          recovered ||= differs;
+        }
+        continue;
+      }
       const displayTimestamp = localTimestamp(persisted.stashedAt);
       const displayOrigin = stashOriginLabel(persisted.origin);
       const attachmentSearch = persisted.attachments
@@ -797,7 +843,7 @@ function loadEntriesInDirectory(dir: string): LoadResult {
         origin: persisted.origin,
         stashedAtMs: persisted.stashedAtMs,
         fileName,
-        revision: assetHash(bytes.subarray(0, bytesRead)),
+        revision,
         attachments: persisted.attachments,
         locked: persisted.locked,
         preserved: persisted.preserved,
@@ -809,6 +855,7 @@ function loadEntriesInDirectory(dir: string): LoadResult {
         searchTextAll: `${searchText}\n${originSearchText}`,
       };
       entries.push(entry);
+      seenEntries?.set(entry.id, entry);
       if (!recoveryFile) ENTRY_CACHE.set(fileName, { fingerprint, entry });
     } catch {
       skipped += 1;
@@ -816,6 +863,7 @@ function loadEntriesInDirectory(dir: string): LoadResult {
       if (fd !== undefined) closeSync(fd);
     }
   }
+  if (recovered) return withPrivateStoragePermissions(dir, () => loadEntriesInDirectory(dir));
 
   const candidateNames = new Set(names);
   for (const cachedName of ENTRY_CACHE.keys()) {
@@ -833,6 +881,8 @@ function saveEntry(
   origin: StashOrigin | undefined,
   locked = false,
   preserveOnQuota = false,
+  // A fixed identity names one pathname, so however often it is saved it is published once.
+  identity?: { id: string; stashedAt: string },
 ): void {
   if (Buffer.byteLength(text, "utf8") > MAX_PROMPT_BYTES) {
     throw new Error("Prompt is too large to stash safely");
@@ -840,8 +890,8 @@ function saveEntry(
 
   const dir = checkedStashDir(true);
   cleanupStaleTemps(dir);
-  const id = randomUUID();
-  const stashedAt = new Date().toISOString();
+  const id = identity?.id ?? randomUUID();
+  const stashedAt = identity?.stashedAt ?? new Date().toISOString();
   const fileName = `${stashedAt.replaceAll(":", "-")}-${id}${preserveOnQuota ? ".preserved.json" : ".json"}`;
   const finalPath = join(dir, fileName);
   const tempPath = join(dir, `.${id}.tmp`);
@@ -865,12 +915,19 @@ function saveEntry(
       !preserveOnQuota &&
       (usage.count > MAX_ENTRY_FILES || usage.bytes > MAX_TOTAL_BYTES)
     ) {
-      throw new Error(
-        "OMS storage quota reached across all chats. Open the stash browser and press g to manage it",
-      );
+      throw new StorageQuotaError(QUOTA_ERROR);
     }
     checkedStashDir(false);
-    renameSync(tempPath, finalPath);
+    if (identity) {
+      try {
+        linkSync(tempPath, finalPath);
+      } catch (error) {
+        if (errorCode(error) !== "EEXIST") throw error;
+      }
+      unlinkSync(tempPath);
+    } else {
+      renameSync(tempPath, finalPath);
+    }
     ownsTemp = false;
     syncDirectory(dir);
   } catch (error) {
@@ -881,6 +938,40 @@ function saveEntry(
         syncDirectory(dir);
       } catch {}
     }
+    throw error;
+  }
+}
+
+// Keeps an orphaned edit as a preserved conflict copy. The copy's id and timestamp derive from the
+// orphan, so sessions converting it at once, or again after a failed release, publish one copy.
+// Returns false while another session may still be writing that copy's temp.
+function saveOrphanCopy(dir: string, orphan: PersistedEntry, revision: string, stat: Stats): boolean {
+  const stashedAt = new Date(stat.mtimeMs).toISOString();
+  const hash = assetHash(Buffer.from(`${revision}:${stashedAt}`));
+  // RFC 9562 version 8 layout, so the id passes the same check as random ones.
+  const variant = "89ab".charAt(Number.parseInt(hash.charAt(16), 16) % 4);
+  const id = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-8${hash.slice(13, 16)}-${variant}${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+  try {
+    saveEntry(orphan.text, orphan.inputMode, orphan.attachments, orphan.origin, orphan.locked, true, { id, stashedAt });
+    return true;
+  } catch (error) {
+    if (errorCode(error) !== "EEXIST") throw error;
+  }
+  // A complete copy temp past the live-write window was left by a crash before saveEntry could
+  // publish it. Publishing it here keeps the orphan, and so its stash, from staying blocked.
+  const tempPath = join(dir, `.${id}.tmp`);
+  try {
+    const temp = lstatSync(tempPath);
+    if (Date.now() - temp.mtimeMs < ACTIVE_TEMP_MS || !isRecoverableTemp(tempPath)) return false;
+    try {
+      linkSync(tempPath, join(dir, `${stashedAt.replaceAll(":", "-")}-${id}.preserved.json`));
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") throw error;
+    }
+    releaseTemp(tempPath, temp);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return false;
     throw error;
   }
 }
@@ -900,6 +991,28 @@ function openReplacementTemp(path: string): number {
   }
 }
 
+// Publishes a recovery temp under its stash name before the stash changes. A recently written
+// temp may belong to a live writer that will still rename it, so it is never claimed.
+function publishRecovery(dir: string, entry: StashEntry): string {
+  const publishedName = `${entry.stashedAt.replaceAll(":", "-")}-${entry.id}${entry.preserved ? ".preserved.json" : ".json"}`;
+  const sourcePath = join(dir, basename(entry.fileName));
+  try {
+    if (Date.now() - lstatSync(sourcePath).mtimeMs < ACTIVE_TEMP_MS) {
+      throw new EntryConflictError("Another process is updating this stash");
+    }
+    // Publish recovery only if no other writer has published this stash.
+    linkSync(sourcePath, join(dir, publishedName));
+    unlinkSync(sourcePath);
+    syncDirectory(dir);
+  } catch (error) {
+    if (errorCode(error) === "EEXIST") {
+      throw new EntryConflictError("Stash was published while its recovery file was being changed");
+    }
+    if (errorCode(error) !== "ENOENT") throw error;
+  }
+  return publishedName;
+}
+
 function replaceEntry(
   entry: StashEntry,
   text: string,
@@ -908,25 +1021,11 @@ function replaceEntry(
 ): void {
   const dir = checkedStashDir(false);
   const publishedName = STALE_TEMP.test(entry.fileName)
-    ? `${entry.stashedAt.replaceAll(":", "-")}-${entry.id}${entry.preserved ? ".preserved.json" : ".json"}`
+    ? publishRecovery(dir, entry)
     : entry.preserved
       ? basename(entry.fileName)
       : `${entry.stashedAt.replaceAll(":", "-")}-${entry.id}.json`;
   const finalPath = join(dir, publishedName);
-  const sourcePath = join(dir, basename(entry.fileName));
-  if (STALE_TEMP.test(entry.fileName)) {
-    try {
-      // Publish recovery only if no other writer has published this stash.
-      linkSync(sourcePath, finalPath);
-      unlinkSync(sourcePath);
-      syncDirectory(dir);
-    } catch (error) {
-      if (errorCode(error) === "EEXIST") {
-        throw new EntryConflictError("Stash was published while its recovery file was being edited");
-      }
-      if (errorCode(error) !== "ENOENT") throw error;
-    }
-  }
   const tempPath = join(dir, `.${entry.id}.tmp`);
   const payload = `${JSON.stringify({
     id: entry.id,
@@ -938,7 +1037,8 @@ function replaceEntry(
     locked,
     preserved: entry.preserved,
   }, null, 2)}\n`;
-  if (Buffer.byteLength(payload, "utf8") > MAX_ENTRY_FILE_BYTES) {
+  const payloadBytes = Buffer.byteLength(payload, "utf8");
+  if (payloadBytes > MAX_ENTRY_FILE_BYTES) {
     throw new Error("Edited prompt is too large to persist safely");
   }
   let fd: number | undefined;
@@ -946,14 +1046,25 @@ function replaceEntry(
   try {
     fd = openReplacementTemp(tempPath);
     ownsTemp = true;
-    let currentRevision: string;
+    let current: Buffer;
     try {
-      currentRevision = assetHash(readFileSync(finalPath));
+      current = readFileSync(finalPath);
     } catch {
       throw new EntryConflictError("Stash changed while it was being edited");
     }
-    if (currentRevision !== entry.revision) {
+    if (assetHash(current) !== entry.revision) {
       throw new EntryConflictError("Stash changed while it was being edited");
+    }
+    // Loading drops normal stashes past the metadata budget, so an edit must not grow past it.
+    // A lock toggle only flips a flag and stays allowed, or a full store could never be unlocked
+    // and cleaned up.
+    if (
+      !entry.preserved &&
+      (text !== entry.text || attachments !== entry.attachments) &&
+      payloadBytes > current.length &&
+      storageUsage(dir, publishedName).bytes + payloadBytes > MAX_TOTAL_BYTES
+    ) {
+      throw new StorageQuotaError(QUOTA_ERROR);
     }
     writeFileSync(fd, payload, "utf8");
     fsyncSync(fd);
@@ -980,7 +1091,7 @@ function setEntryLocked(entry: StashEntry, locked: boolean): void {
   replaceEntry(entry, entry.text, entry.attachments, locked);
 }
 
-function setEntryText(entry: StashEntry, editedText: string): "updated" | "conflict-copy" {
+function setEntryText(entry: StashEntry, editedText: string): "updated" | "conflict-copy" | "quota-copy" {
   const images = entry.attachments.filter(
     (attachment): attachment is StoredImageAttachment => attachment.kind === "image",
   );
@@ -1016,66 +1127,82 @@ function setEntryText(entry: StashEntry, editedText: string): "updated" | "confl
     replaceEntry(entry, text, attachments, entry.locked);
     return "updated";
   } catch (error) {
-    if (!(error instanceof EntryConflictError)) throw error;
+    if (!(error instanceof EntryConflictError) && !(error instanceof StorageQuotaError)) throw error;
+    // Either way the edit survives as a preserved copy, which the quota and load budget exempt.
     saveEntry(text, entry.inputMode, attachments, entry.origin, entry.locked, true);
-    return "conflict-copy";
+    return error instanceof StorageQuotaError ? "quota-copy" : "conflict-copy";
+  }
+}
+
+// Publication only ever links, so an interrupted one leaves the reservation pathname as a second
+// hard link to the stash. Deleting the stash must delete that alias too, or the prompt comes back.
+function releaseAlias(tempPath: string, path: string): void {
+  try {
+    const temp = lstatSync(tempPath, { bigint: true });
+    const target = lstatSync(path, { bigint: true });
+    if (temp.isFile() && temp.dev === target.dev && temp.ino === target.ino) {
+      unlinkSync(tempPath);
+      invalidatePrivateStoragePermission(path);
+    }
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") throw error;
   }
 }
 
 function removeEntry(entry: StashEntry, sync = true): boolean {
   const dir = checkedStashDir(false);
-  const path = join(dir, basename(entry.fileName));
-  let stat: Stats;
+  const fileName = STALE_TEMP.test(entry.fileName)
+    ? publishRecovery(dir, entry)
+    : basename(entry.fileName);
+  const path = join(dir, fileName);
+  const tempPath = join(dir, `.${entry.id}.tmp`);
+  releaseAlias(tempPath, path);
+  // Deletion holds the replacement reservation, so a concurrent edit or lock is never lost.
+  const fd = openReplacementTemp(tempPath);
   try {
-    stat = lstatSync(path);
-  } catch (error) {
-    if (errorCode(error) === "ENOENT") {
-      ENTRY_CACHE.delete(entry.fileName);
-      if (sync) syncDirectory(dir);
-      return false;
+    const stat = lstatSync(path);
+    if (
+      stat.isSymbolicLink() ||
+      !stat.isFile() ||
+      !hasPrivateStoragePermissions(path, stat)
+    ) {
+      throw new Error("Selected OMS entry is not a private regular file");
     }
-    throw error;
-  }
-  if (
-    stat.isSymbolicLink() ||
-    !stat.isFile() ||
-    !hasPrivateStoragePermissions(path, stat)
-  ) {
-    throw new Error("Selected OMS entry is not a private regular file");
-  }
-  const bytes = readFileSync(path);
-  const persisted = parsePersistedEntry(bytes.toString("utf8"));
-  if (!persisted) throw new Error("Selected OMS entry changed and cannot be deleted safely");
-  if (assetHash(bytes) !== entry.revision) {
-    throw new EntryConflictError("Stash changed after the browser loaded");
-  }
-  if (persisted.locked) throw new Error("Locked stashes must be unlocked before deletion");
-  try {
+    const bytes = readFileSync(path);
+    const persisted = parsePersistedEntry(bytes.toString("utf8"));
+    if (!persisted) throw new Error("Selected OMS entry changed and cannot be deleted safely");
+    if (assetHash(bytes) !== entry.revision) {
+      throw new EntryConflictError("Stash changed after the browser loaded");
+    }
+    if (persisted.locked) throw new Error("Locked stashes must be unlocked before deletion");
     unlinkSync(path);
+    return true;
   } catch (error) {
-    if (errorCode(error) === "ENOENT") {
-      ENTRY_CACHE.delete(entry.fileName);
-      if (sync) syncDirectory(dir);
-      return false;
-    }
+    if (errorCode(error) === "ENOENT") return false;
     throw error;
+  } finally {
+    closeSync(fd);
+    try {
+      unlinkSync(tempPath);
+    } catch {}
+    ENTRY_CACHE.delete(entry.fileName);
+    ENTRY_CACHE.delete(fileName);
+    if (sync) syncDirectory(dir);
   }
-  ENTRY_CACHE.delete(entry.fileName);
-  if (sync) syncDirectory(dir);
-  return true;
 }
 
 function removeEntries(entries: StashEntry[]): number {
   const dir = checkedStashDir(false);
   return withPrivateStoragePermissions(dir, () => {
     let deleted = 0;
-    try {
-      for (const entry of entries) {
+    for (const entry of entries) {
+      try {
         if (removeEntry(entry, false)) deleted += 1;
+      } catch {
+        // A concurrent lock, edit, or safety-check failure keeps that stash; the summary shows it.
       }
-    } finally {
-      syncDirectory(dir);
     }
+    syncDirectory(dir);
     return deleted;
   });
 }
@@ -1120,7 +1247,8 @@ function headline(text: string): string {
     const newline = safe.indexOf("\n", start);
     const end = newline === -1 ? safe.length : newline;
     const line = safe.slice(start, end).trim();
-    if (line) return line;
+    // A list row never shows more, and each render truncates every visible headline.
+    if (line) return line.slice(0, 1024);
     if (newline === -1) break;
     start = newline + 1;
   }
@@ -1262,38 +1390,91 @@ function parseEditorDraft(text: string): EditorDraft {
 }
 
 function activeEditor(ctx: ExtensionContext): CustomEditor | undefined {
-  return ACTIVE_EDITORS.get(ctx.sessionManager);
+  const editor = ACTIVE_EDITORS.get(ctx.sessionManager);
+  // Another extension can swap the composer later; a replaced editor never regains focus.
+  return editor?.tui && editor.tui.getFocused() !== editor ? undefined : editor;
 }
 
 function hasEditorContent(ctx: ExtensionContext): boolean {
-  return (
-    parseEditorDraft(ctx.ui.getEditorText()).text.length > 0 ||
-    (activeEditor(ctx)?.pendingImages.length ?? 0) > 0
-  );
+  // Attachments live as chip tokens in the text; pendingImages also keeps deleted chips' images.
+  return parseEditorDraft(ctx.ui.getEditorText()).text.length > 0;
 }
 
 function installEditorBridge(ctx: ExtensionContext): void {
   if (ctx.mode !== "tui") return;
   const sessionManager = ctx.sessionManager;
   ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-    const editor = new CustomEditor(tui, theme, keybindings);
-    (tui as { enableScopedInputRender?: (component: unknown) => void })?.enableScopedInputRender?.(editor);
+    // OMP hands only text to a new composer, so keep the live one with its pasted payloads.
+    const focused = tui.getFocused?.();
+    const editor = focused instanceof CustomEditor ? focused : new CustomEditor(tui, theme, keybindings);
+    if (editor === focused) editor.tui ??= tui;
     ACTIVE_EDITORS.set(sessionManager, editor);
     return editor;
   });
+}
+
+// Compiled OMP does not serve pi-tui's prompt/* modules to extensions, so OMP's attachment token
+// logic is mirrored here. Chips read "<icon> #N" with an icon from any symbol preset.
+const VISION_MARKER = /\[(Image|Video) #([1-9]\d*)((?:,[^\]\n]*)?)\](?: attachment:\/\/(\2))?/g;
+const ATTACHMENT_TOKEN = new RegExp(
+  `\\[(?:Image|Video) #[1-9]\\d*(?:,[^\\]\\n]*)?\\]|(?:${Object.values(SYMBOL_PRESETS)
+    .flatMap((preset) => [preset["chip.image"], preset["chip.video"], preset["chip.paste"]])
+    .map((icon) => icon.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|")}) #[1-9]\\d*`,
+);
+
+// Copied from pi-tui's prompt/image-format.ts, which compiled OMP does not serve to extensions
+// either. Stored images keep the display extensions OMP gives them.
+const IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/svg+xml": "svg",
+};
+
+function normalizeBlobExtension(extension: string | undefined): string | undefined {
+  if (!extension) return undefined;
+  const normalized = extension.startsWith(".") ? extension.slice(1) : extension;
+  if (normalized.length === 0 || normalized.length > 32) return undefined;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(normalized)) return undefined;
+  return normalized.toLowerCase();
+}
+
+function blobExtensionForImageMimeType(mimeType: string | undefined): string | undefined {
+  if (!mimeType) return undefined;
+  const lower = mimeType.toLowerCase();
+  const known = IMAGE_EXTENSION_BY_MIME[lower];
+  if (known) return known;
+  if (!lower.startsWith("image/")) return undefined;
+  const subtype = lower.slice("image/".length).split(";")[0]?.split("+")[0];
+  return normalizeBlobExtension(subtype);
 }
 
 function captureDraft(ctx: ExtensionContext): CapturedDraft {
   const editor = activeEditor(ctx);
   if (!editor) {
     const draft = parseEditorDraft(ctx.ui.getEditorText());
-    if (IMAGE_TOKEN.test(draft.text) || COLLAPSED_PASTE_TOKEN.test(draft.text)) {
+    if (ATTACHMENT_TOKEN.test(draft.text) || COLLAPSED_PASTE_TOKEN.test(draft.text)) {
       throw new Error("Restart OMP once so OhMyStash can attach to the native editor");
     }
     return { ...draft, attachments: [] };
   }
-  const expandedDraft = parseEditorDraft(editor.getExpandedText());
-  const images = editor.pendingImages;
+  // Deleted chips leave their images in pendingImages. Like OMP's submit, keep only images the
+  // text still references and renumber their markers densely.
+  const expanded = editor.getExpandedText();
+  const keep = [...new Set(Array.from(expanded.matchAll(VISION_MARKER), (match) => Number(match[2])))]
+    .filter((n) => n <= editor.pendingImages.length)
+    .sort((a, b) => a - b);
+  const expandedDraft = parseEditorDraft(
+    expanded.replace(VISION_MARKER, (marker, kind: string, n: string, tail: string, ref: string | undefined) => {
+      const index = keep.indexOf(Number(n)) + 1;
+      if (index === 0) return marker;
+      return `[${kind} #${index}${tail}]${ref === undefined ? "" : ` attachment://${index}`}`;
+    }),
+  );
+  const images = editor.pendingImages.filter((_, index) => keep.includes(index + 1));
   if (images.length > MAX_ATTACHMENTS) {
     throw new Error(`An OMS entry can contain at most ${MAX_ATTACHMENTS} attachments`);
   }
@@ -1411,7 +1592,8 @@ function submitQueuedEntry(ctx: ExtensionContext, entry: StashEntry): void {
     return;
   }
   setEditorDraft(ctx, entry, true);
-  editor.handleInput("\r");
+  // Enter follows user keybindings and may insert a newline instead of submitting.
+  editor.submit();
 }
 
 
@@ -1426,14 +1608,19 @@ async function editEntry(
   ctx: ExtensionContext,
   entry: StashEntry,
   tui: TUI,
-): Promise<"updated" | "conflict-copy" | "unchanged" | "cancelled"> {
+): Promise<"updated" | "conflict-copy" | "quota-copy" | "unchanged" | "cancelled"> {
   const original = editableEntryText(entry);
   const editorCommand = pluginConfig.editorCommand || getEditorCommand();
   let edited: string | null | undefined;
   if (editorCommand) {
     tui.stop();
     try {
-      edited = await openInEditor(editorCommand, original, { extension: ".md" });
+      // Editors such as vim, nano, and helix end every saved file with a newline. Keep it only when
+      // the stash already ended with one, so quitting without changes leaves the stash untouched.
+      edited = await openInEditor(editorCommand, original, {
+        extension: ".md",
+        trimTrailingNewline: !original.endsWith("\n"),
+      });
     } finally {
       tui.start();
       tui.requestRender(true);
@@ -1486,11 +1673,14 @@ function filterStashEntries(
     entry.searchTextLower ??= entry.searchText.toLowerCase();
     return entry.searchTextLower.includes(normalized);
   });
+  // Literal search reads whole prompts. The typo-tolerant fallback reads only the first and last
+  // 2,048 characters of long entries, so pi-tui can cache their search indexes between keystrokes.
   return literalMatches.length > 0
     ? literalMatches
-    : fuzzyFilter(entries, query, (entry) =>
-        includeOrigin ? entry.searchTextAll : entry.searchText,
-      );
+    : fuzzyFilter(entries, query, (entry) => {
+        const text = includeOrigin ? entry.searchTextAll : entry.searchText;
+        return text.length <= 4096 ? text : `${text.slice(0, 2048)}\n${text.slice(-2047)}`;
+      });
 }
 
 function showBrowser(
@@ -1517,14 +1707,9 @@ function showBrowser(
       let selected = 0;
       let previewOffset = 0;
       let previewRows = 1;
-      let previewCacheKey = "";
-      let previewCache: PreviewModel | undefined;
+      let previewCache: { entry: StashEntry; width: number; model: PreviewModel } | undefined;
 
       const selectedEntry = () => filteredEntries[selected];
-      const resetPreview = () => {
-        previewOffset = 0;
-        previewCacheKey = "";
-      };
       const applySearch = () => {
         filteredEntries = filterStashEntries(
           scopedEntries,
@@ -1532,7 +1717,7 @@ function showBrowser(
           scope === "all",
         );
         selected = 0;
-        resetPreview();
+        previewOffset = 0;
         tui.requestRender();
       };
       const toggleScope = () => {
@@ -1543,18 +1728,17 @@ function showBrowser(
       const moveSelection = (delta: number) => {
         if (filteredEntries.length === 0) return;
         selected = Math.max(0, Math.min(filteredEntries.length - 1, selected + delta));
-        resetPreview();
+        previewOffset = 0;
         tui.requestRender();
       };
       const previewModel = (width: number) => {
         const entry = selectedEntry();
         if (!entry) return undefined;
-        const key = `${entry.id}:${width}`;
-        if (key !== previewCacheKey || !previewCache) {
-          previewCacheKey = key;
-          previewCache = buildPreviewModel(entry.text, width);
+        // Rebuild only when the selection or width changes, not on every search keystroke.
+        if (previewCache?.entry !== entry || previewCache.width !== width) {
+          previewCache = { entry, width, model: buildPreviewModel(entry.text, width) };
         }
-        return previewCache;
+        return previewCache.model;
       };
       const exitSearch = (clear: boolean) => {
         searching = false;
@@ -1591,7 +1775,7 @@ function showBrowser(
       };
       return {
         invalidate() {
-          previewCacheKey = "";
+          previewCache = undefined;
           searchInput.invalidate();
         },
         handleInput(data: string) {
@@ -1662,7 +1846,8 @@ function showBrowser(
           }
         },
         render(width: number) {
-          const terminalRows = Math.max(1, tui.terminal.rows - 2);
+          // The overlay may fill the terminal; OMP drops taller output from the top, title first.
+          const terminalRows = Math.max(1, tui.terminal.rows);
           const renderWidth = Math.max(1, width);
           const activeScopeLabel = scope === "current" ? "This chat" : "All chats";
           const entry = selectedEntry();
@@ -1784,7 +1969,17 @@ function showBrowser(
             return `${prefix}${styled}${gap}${suffix}`;
           };
 
-          if (pluginConfig.layout === "compact" || terminalRows < 10 || renderWidth < 32) {
+          const useSplitLayout =
+            (pluginConfig.layout === "split" && renderWidth >= 72) ||
+            (pluginConfig.layout === "auto" && renderWidth >= 92);
+          // Framed layouts need their tallest chrome (prompt actions, plus origin details when
+          // stacked) and a minimal body: split 8 + 4 rows, stacked 10 + 3. Otherwise go compact,
+          // which fits any terminalRows, so the title and search row are never clipped.
+          if (
+            pluginConfig.layout === "compact" ||
+            renderWidth < 32 ||
+            terminalRows < (useSplitLayout ? 12 : 13)
+          ) {
             const position = entry ? `${selected + 1}/${filteredEntries.length}` : `0/${filteredEntries.length}`;
             const mode = entry
               ? ` · ${entry.inputMode === "queue" ? queueGlyph : draftGlyph}${entry.locked ? " [L]" : ""}${entry.preserved ? " [C]" : ""}${entry.attachments.length > 0 ? ` +${entry.attachments.length}` : ""}`
@@ -1809,10 +2004,14 @@ function showBrowser(
                 truncateToWidth(searchLine, renderWidth, ""),
                 theme.fg(
                   "muted",
-                  noCurrentStashes ? "No stashes in this chat" : "No matching prompts",
+                  truncateToWidth(
+                    noCurrentStashes ? "No stashes in this chat" : "No matching prompts",
+                    renderWidth,
+                    "",
+                  ),
                 ),
                 ...(noCurrentStashes && entries.length > 0
-                  ? [theme.fg("dim", `${entries.length} elsewhere · press g`)]
+                  ? [theme.fg("dim", truncateToWidth(`${entries.length} elsewhere · press g`, renderWidth, ""))]
                   : []),
               ].slice(0, terminalRows);
             }
@@ -1830,9 +2029,6 @@ function showBrowser(
           }
 
           const frame = createFrame(theme, renderWidth);
-          const useSplitLayout =
-            (pluginConfig.layout === "split" && renderWidth >= 72) ||
-            (pluginConfig.layout === "auto" && renderWidth >= 92);
           if (useSplitLayout) {
             const promptFooterRows = entry ? 2 : 0;
             const availableBodyRows = Math.min(
@@ -2011,6 +2207,7 @@ function showBrowser(
         },
       };
     },
+    OVERLAY_OPTIONS,
   );
 }
 
@@ -2084,8 +2281,15 @@ async function toggleStash(ctx: ExtensionContext): Promise<void> {
   await restoreLatest(ctx, draft.inputMode === "queue" ? "queue" : undefined);
 }
 
+// Keys from one input batch all run before the first browser mounts, and a second mount strands it.
+const OPENING_BROWSERS = new WeakSet<object>();
+
 async function browse(ctx: ExtensionContext): Promise<void> {
-  if (ctx.mode !== "tui") return;
+  if (ctx.mode !== "tui" || OPENING_BROWSERS.has(ctx.ui)) return;
+  OPENING_BROWSERS.add(ctx.ui);
+  // The mounted browser owns input, so release after this turn; a browser that another
+  // dialog displaced then stays reopenable.
+  queueMicrotask(() => OPENING_BROWSERS.delete(ctx.ui));
   let query = "";
   let scope: BrowserScope = "current";
   while (true) {
@@ -2105,10 +2309,12 @@ async function browse(ctx: ExtensionContext): Promise<void> {
           ? "Stashed prompt updated"
           : result === "conflict-copy"
             ? "Stash changed concurrently; edited text was preserved as a new stash"
-            : result === "unchanged"
-              ? "Stashed prompt unchanged"
-              : "Stashed prompt edit cancelled",
-        "info",
+            : result === "quota-copy"
+              ? "OMS storage quota reached; edited text was preserved as a new stash"
+              : result === "unchanged"
+                ? "Stashed prompt unchanged"
+                : "Stashed prompt edit cancelled",
+        result === "quota-copy" ? "warning" : "info",
       );
       continue;
     }

@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.10.3 - 2026-10-07
+
+### Changed
+
+- Open the browser and option pickers in OMP's stock bottom overlay, the one Switch Model uses. It spans the full width with no dimming and leaves the composer's draft, caret, and undo history untouched.
+- Export `OVERLAY_OPTIONS` (`{ overlay: true }`) from `@hkay-dev/ohmystash/ui`, replacing the `POPUP_OPTIONS` export removed in 1.10.1. Custom pickers open with `ctx.ui.custom(factory, OVERLAY_OPTIONS)`.
+
+### Fixed
+
+- Fit the browser and pickers, with their titles and search rows, in short or narrow terminals.
+- Keep a stash's final newline as it was when an external editor saves it unchanged. Editors that always add one, such as vim, nano, and helix, no longer turn a quit without changes into an edit.
+- Ignore images whose chips you deleted from the composer. They no longer count as a draft or get stashed.
+- Submit a queued stash with `Shift+Q` even when Enter is bound to insert a newline.
+- Ignore a second browser shortcut press that arrives before the first browser opens.
+- Stop using the old composer after another extension replaces it.
+- Keep pastes and images added before OhMyStash attaches to the composer.
+- Keep search typing fast in very long stashes.
+- Deleting a stash no longer loses another session's edit or lock, and a leftover recovery file no longer brings a deleted stash back. Delete all skips a stash that another session is changing and still reports what it deleted.
+- Never claim a save that another session is still writing. An edit cut off by a crash becomes exactly one conflict copy, and a damaged leftover file is set aside so it no longer blocks deleting its stash.
+- Keep an edit that would go over the storage quota as a new stash, with a warning, instead of losing it. Locking and unlocking never hit the quota.
+- Stop warning that entries were omitted while another session is still saving.
+- Copy OMP's small image-format helper instead of importing a module that compiled OMP does not serve to extensions.
+
+### Development
+
+- Tests no longer read your global OMP plugin settings.
+- Pin the TypeScript and Bun type versions, and type-check the benchmarks and capture scripts.
+
 ## 1.10.2 - 2026-10-07
 
 ### Fixed

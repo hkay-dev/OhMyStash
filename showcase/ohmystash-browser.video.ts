@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { defineVideo } from "tcut";
+import { defineVideo } from "termcut";
 
 const root = resolve(import.meta.dir, "..");
 const assetsDir = join(root, "assets");
