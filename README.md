@@ -18,7 +18,7 @@ OMP's plugin manager uses Bun for package installation:
 brew install bun
 ```
 
-Version 1.10.3 works with stock OMP 18.8.3. The browser and option pickers open in OMP's stock bottom overlay, like the built-in Switch Model dialog. They span the full width with square, accent-colored frames and no dimming, and they leave your draft, caret, and undo history untouched.
+Version 1.10.4 works with stock OMP 18.10.3. The browser and option pickers open in OMP's stock bottom overlay, like the built-in Switch Model dialog. They span the full width with square, accent-colored frames and no dimming, and they leave your draft, caret, and undo history untouched.
 
 Install directly from GitHub:
 
@@ -26,7 +26,7 @@ Install directly from GitHub:
 omp plugin install github:hkay-dev/OhMyStash
 ```
 
-OMP installs the standard SDK dependencies automatically. No custom OMP executable, SDK archives, or separate installer is needed. To pin this release, use `github:hkay-dev/OhMyStash#v1.10.3` instead.
+OMP installs the standard SDK dependencies automatically. No custom OMP executable, SDK archives, or separate installer is needed. To pin this release, use `github:hkay-dev/OhMyStash#v1.10.4` instead.
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
@@ -241,7 +241,7 @@ A separate filesystem backup is still required for hardware failure, filesystem 
 
 ## Development
 
-Use Bun 1.4.2. Development dependencies pin the official SDK packages to 18.8.3, with `^18.8.3` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
+Use Bun 1.4.2. Development dependencies pin the official SDK packages to 18.10.3, with `^18.10.3` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
@@ -250,11 +250,11 @@ bun test
 bun run benchmark:cross-chat
 ```
 
-OhMyStash 1.10.3 runs on stock OMP 18.8.3. The extension entry point remains `extensions/prompt-stash.ts`.
+OhMyStash 1.10.4 runs on stock OMP 18.10.3. The extension entry point remains `extensions/prompt-stash.ts`.
 
 ### Shared picker UI
 
-Version 1.10.3 exports the common picker helpers at `@hkay-dev/ohmystash/ui`, using only stock public SDK exports:
+Version 1.10.4 exports the common picker helpers at `@hkay-dev/ohmystash/ui`, using only stock public SDK exports:
 
 - `OVERLAY_OPTIONS` is `{ overlay: true }`, the `ctx.ui.custom` options for OMP's stock bottom overlay. Like Switch Model, it spans the full width, can use every terminal row, and adds no backdrop.
 - `createFrame(theme, width)` returns square, accent-colored `top`, `row`, `divider`, and `bottom` renderers, with an embedded title and terminal-width-safe content.
@@ -262,7 +262,7 @@ Version 1.10.3 exports the common picker helpers at `@hkay-dev/ohmystash/ui`, us
 - `extensionIcon(key)` reads the Nerd Font symbol preset and returns an empty string for an unknown key. It does not change the host symbol preset or read a plugin's Show icons setting; callers apply their own setting.
 - `selectOption(ctx, title, options, iconKey?)` opens a searchable, keyboard-navigable picker in that overlay and resolves to the selected string, or `undefined` on cancellation. The host composer's draft, caret, undo history, and attachments stay untouched.
 
-Custom pickers call `ctx.ui.custom(factory, OVERLAY_OPTIONS)`, so OMP shows them in the same bottom overlay as Switch Model and leaves the composer untouched underneath. Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Companion plugins can use `github:hkay-dev/OhMyStash#v1.10.3`; OMP installs declared dependencies through its normal package manager. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module.
+Custom pickers call `ctx.ui.custom(factory, OVERLAY_OPTIONS)`, so OMP shows them in the same bottom overlay as Switch Model and leaves the composer untouched underneath. Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Companion plugins can use `github:hkay-dev/OhMyStash#v1.10.4`; OMP installs declared dependencies through its normal package manager. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module.
 
 ### Install archive
 
@@ -272,7 +272,7 @@ The package `files` allowlist limits npm and Bun packs. GitHub downloads also us
 
 ### Packaged installed-runtime proof
 
-Use the existing [settings capture](showcase/ohmystash-settings.video.ts) to check a real package archive through the installed compiled OMP loader, not `-e` against this worktree. Review the installed version's contracts first. The recipe below targets stock OMP 18.8.3 using its tagged [CLI](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.8.3/docs/cli-reference.md), [loader](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.8.3/docs/extension-loading.md), [installer](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.8.3/docs/plugin-manager-installer-plumbing.md), and [root-path](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.8.3/docs/environment-variables.md) documentation. A newer source checkout is not matching-version evidence.
+Use the existing [settings capture](showcase/ohmystash-settings.video.ts) to check a real package archive through the installed compiled OMP loader, not `-e` against this worktree. Review the installed version's contracts first. The recipe below targets stock OMP 18.10.3 using its tagged [CLI](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.10.3/docs/cli-reference.md), [loader](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.10.3/docs/extension-loading.md), [installer](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.10.3/docs/plugin-manager-installer-plumbing.md), and [root-path](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.10.3/docs/environment-variables.md) documentation. A newer source checkout is not matching-version evidence.
 
 From this repository, with the existing capture dependencies available:
 
@@ -283,7 +283,7 @@ git archive HEAD | tar -x -C "$OMS_CAPTURE_OUTPUT/source"
 artifact_name="$(npm pack "$OMS_CAPTURE_OUTPUT/source" --ignore-scripts --pack-destination "$OMS_CAPTURE_OUTPUT")"
 export OMS_CAPTURE_ARTIFACT="$OMS_CAPTURE_OUTPUT/$artifact_name"
 export OMS_CAPTURE_OMP="$(command -v omp)"
-export OMS_CAPTURE_OMP_VERSION=18.8.3
+export OMS_CAPTURE_OMP_VERSION=18.10.3
 npm exec -- tcut test showcase/ohmystash-settings.video.ts
 npm run capture:settings
 npm exec -- tcut doctor "$OMS_CAPTURE_OUTPUT/ohmystash-release.cast"

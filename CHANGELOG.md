@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10.4 - 2026-10-12
+
+### Changed
+
+- Support stock OMP 18.10.3. The SDK peers now require `^18.10.3`. OhMyStash needed no code changes: stash and restore, the browser, settings, and the `@hkay-dev/ohmystash/ui` exports work as in 1.10.3.
+
+### Development
+
+- Pin the official 18.10.3 SDK packages and regenerate the lockfile from the stock registry.
+- Point the packaged installed-runtime proof recipe at OMP 18.10.3 and its tagged docs.
+
 ## 1.10.3 - 2026-10-07
 
 ### Changed
