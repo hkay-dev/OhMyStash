@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.11.0 - 2026-10-13
+
+### Added
+
+- `formatShortcut` and `formatShortcutRange` in `@hkay-dev/ohmystash/ui` format OMP key ids such as `alt+shift+s` as Nerd Font Apple keyboard icons, or as plain text such as `Alt+Shift+S`. A run of three or more digit keys with the same modifiers collapses into a range such as `Alt+1-5`.
+- `showList` opens a searchable list of any items in OMP's stock bottom overlay. It supports two-row items, footer actions that either close the list with a result or keep it open, and an optional key that closes it, such as the shortcut that opened it. It fits short and narrow terminals and keeps the selected item in the middle while paging. `createList` returns the same list as a component for use inside another overlay component.
+- Plugins can list their shortcut settings in a top-level `hkay.shortcutHints` field of `package.json`, typed by the new `ShortcutHintDeclaration` export, so other plugins can read and show them. OhMyStash declares its stash and browser shortcuts there.
+
+### Changed
+
+- `selectOption` now runs on the shared list. Its rows, keys, and results are unchanged.
+
+### Development
+
+- Test shortcut formatting, the list at many terminal sizes, its keys and actions, and that `selectOption` draws exactly what 1.10.4 drew for the same keys.
+
 ## 1.10.4 - 2026-10-12
 
 ### Changed

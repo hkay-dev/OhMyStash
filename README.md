@@ -18,7 +18,7 @@ OMP's plugin manager uses Bun for package installation:
 brew install bun
 ```
 
-Version 1.10.4 works with stock OMP 18.10.3. The browser and option pickers open in OMP's stock bottom overlay, like the built-in Switch Model dialog. They span the full width with square, accent-colored frames and no dimming, and they leave your draft, caret, and undo history untouched.
+Version 1.11.0 works with stock OMP 18.10.3. The browser and option pickers open in OMP's stock bottom overlay, like the built-in Switch Model dialog. They span the full width with square, accent-colored frames and no dimming, and they leave your draft, caret, and undo history untouched.
 
 Install directly from GitHub:
 
@@ -26,7 +26,7 @@ Install directly from GitHub:
 omp plugin install github:hkay-dev/OhMyStash
 ```
 
-OMP installs the standard SDK dependencies automatically. No custom OMP executable, SDK archives, or separate installer is needed. To pin this release, use `github:hkay-dev/OhMyStash#v1.10.4` instead.
+OMP installs the standard SDK dependencies automatically. No custom OMP executable, SDK archives, or separate installer is needed. To pin this release, use `github:hkay-dev/OhMyStash#v1.11.0` instead.
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
@@ -250,19 +250,52 @@ bun test
 bun run benchmark:cross-chat
 ```
 
-OhMyStash 1.10.4 runs on stock OMP 18.10.3. The extension entry point remains `extensions/prompt-stash.ts`.
+OhMyStash 1.11.0 runs on stock OMP 18.10.3. The extension entry point remains `extensions/prompt-stash.ts`.
 
 ### Shared picker UI
 
-Version 1.10.4 exports the common picker helpers at `@hkay-dev/ohmystash/ui`, using only stock public SDK exports:
+Version 1.11.0 exports the common picker helpers at `@hkay-dev/ohmystash/ui`, using only stock public SDK exports:
 
 - `OVERLAY_OPTIONS` is `{ overlay: true }`, the `ctx.ui.custom` options for OMP's stock bottom overlay. Like Switch Model, it spans the full width, can use every terminal row, and adds no backdrop.
 - `createFrame(theme, width)` returns square, accent-colored `top`, `row`, `divider`, and `bottom` renderers, with an embedded title and terminal-width-safe content.
 - `fitToWidth(text, width)` clips and pads text to the requested visible terminal width, accounting for ANSI styling and wide characters.
 - `extensionIcon(key)` reads the Nerd Font symbol preset and returns an empty string for an unknown key. It does not change the host symbol preset or read a plugin's Show icons setting; callers apply their own setting.
-- `selectOption(ctx, title, options, iconKey?)` opens a searchable, keyboard-navigable picker in that overlay and resolves to the selected string, or `undefined` on cancellation. The host composer's draft, caret, undo history, and attachments stay untouched.
+- `selectOption(ctx, title, options, iconKey?)` opens a searchable, keyboard-navigable picker in that overlay and resolves to the selected string, or `undefined` on cancellation. The host composer's draft, caret, undo history, and attachments stay untouched. It runs on the shared list below and keeps its own rows, keys, and results.
+- `showList(ctx, options)` opens a searchable list of any items in that overlay. It resolves to the result of the footer action that closed it, or `undefined` when Esc, Ctrl+C, or the optional `toggleKey` closes it.
+- `createList(tui, theme, options, done)` returns the same list as a component, for a plugin that shows it inside its own overlay component. Its `select(item)` moves the selection.
+- `formatShortcut(key, { icons })` formats an OMP key id such as `alt+shift+s`. By default it draws Nerd Font Apple keyboard icons in macOS menu order, separated by spaces. With `icons: false` it gives plain text such as `Alt+Shift+S`. A blank key or `none` gives an empty string.
+- `formatShortcutRange(keys, { icons })` formats several keys and skips blank and `none` keys. Three or more keys with the same modifiers and consecutive digits collapse into one range, such as `Alt+1-5`.
+- `ShortcutHintDeclaration` types one entry of the `hkay.shortcutHints` package field described below.
 
-Custom pickers call `ctx.ui.custom(factory, OVERLAY_OPTIONS)`, so OMP shows them in the same bottom overlay as Switch Model and leaves the composer untouched underneath. Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Companion plugins can use `github:hkay-dev/OhMyStash#v1.10.4`; OMP installs declared dependencies through its normal package manager. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module.
+The list options are:
+
+| Option | Meaning |
+| --- | --- |
+| `items` | The items, or a function that returns the current items of a list that changes while it is open. |
+| `title` | The frame title, or a function of `{ query, matches, total, selected }`, for example to show match counts. |
+| `renderItem(item, { width, selected, theme, compact })` | One row per item, or two rows for two-line items. The compact layout shows only the first row. |
+| `search(item)` | The text that every search word must appear in, ignoring case. Defaults to `String(item)`. |
+| `filter(items, query)` | Replaces that search with your own matching and order. |
+| `id(item)` | Keeps the selection on the same item when the items change. |
+| `selected` | The item to select when the list opens. |
+| `emptyLabel` | Shown when nothing matches. A function gets the same state as `title`. |
+| `prompt`, `placeholder` | The label before the search field and the dim text in the empty field. |
+| `actions` | Footer actions, `{ key, label, run(item) }`. `run` gets the selected item, or `undefined` when nothing matches. It returns a result to close the list with it, or `undefined` to keep the list open and repaint it. A returned promise is awaited first. The primary action uses the `enter` key. |
+| `toggleKey` | Another key that closes the list, such as the shortcut that opened it. |
+
+Up and Down move the selection, PgUp and PgDn move a page, and Home and End jump to either end. The list can use the whole overlay height, but it never draws more rows than the terminal has or lines wider than the overlay. Paging keeps the selected item in the middle. Below 12 rows the list switches to a compact layout that keeps the title and search row. The full layout adds the position, such as `3 of 20`, with the move and page keys. The footer lists the actions.
+
+Custom pickers call `ctx.ui.custom(factory, OVERLAY_OPTIONS)`, so OMP shows them in the same bottom overlay as Switch Model and leaves the composer untouched underneath. Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Companion plugins can use `github:hkay-dev/OhMyStash#v1.11.0`; OMP installs declared dependencies through its normal package manager. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module.
+
+#### Shortcut hint declarations
+
+A plugin can list its shortcuts in a top-level `hkay.shortcutHints` field of its `package.json`, outside the `omp` block that OMP reads, so other plugins can read and show them:
+
+```json
+"hkay": { "shortcutHints": [ { "label": "stash", "settings": ["Stash shortcut"], "priority": 10 } ] }
+```
+
+`settings` names one or more of the plugin's own `omp.settings` string settings. A reader takes each current value from the plugin's settings and falls back to that setting's manifest `default`; `none` means no shortcut. Lower `priority` values come first. OhMyStash declares `stash` for Stash shortcut, priority 10, and `stashes` for Browser shortcut, priority 20.
 
 ### Install archive
 

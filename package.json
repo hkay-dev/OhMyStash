@@ -1,6 +1,6 @@
 {
   "name": "@hkay-dev/ohmystash",
-  "version": "1.10.4",
+  "version": "1.11.0",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.2",
@@ -100,5 +100,23 @@
         "description": "Use contextual Nerd Font icons in the prompt browser."
       }
     }
+  },
+  "hkay": {
+    "shortcutHints": [
+      {
+        "label": "stash",
+        "settings": [
+          "Stash shortcut"
+        ],
+        "priority": 10
+      },
+      {
+        "label": "stashes",
+        "settings": [
+          "Browser shortcut"
+        ],
+        "priority": 20
+      }
+    ]
   }
 }
