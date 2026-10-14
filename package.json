@@ -3,7 +3,7 @@
   "version": "1.11.0",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.4.2",
+  "packageManager": "bun@1.4.3",
   "files": [
     "extensions"
   ],
@@ -24,15 +24,15 @@
     "capture:all": "bun run capture:browser && bun run capture:settings"
   },
   "peerDependencies": {
-    "@oh-my-pi/pi-ai": "^18.10.3",
-    "@oh-my-pi/pi-coding-agent": "^18.10.3",
-    "@oh-my-pi/pi-tui": "^18.10.3"
+    "@oh-my-pi/pi-ai": "^18.10.4",
+    "@oh-my-pi/pi-coding-agent": "^18.10.4",
+    "@oh-my-pi/pi-tui": "^18.10.4"
   },
   "devDependencies": {
-    "@oh-my-pi/pi-ai": "18.10.3",
-    "@oh-my-pi/pi-coding-agent": "18.10.3",
-    "@oh-my-pi/pi-tui": "18.10.3",
-    "@types/bun": "1.4.2",
+    "@oh-my-pi/pi-ai": "18.10.4",
+    "@oh-my-pi/pi-coding-agent": "18.10.4",
+    "@oh-my-pi/pi-tui": "18.10.4",
+    "@types/bun": "1.4.3",
     "termcut": "1.0.0",
     "typescript": "7.0.2"
   },
@@ -115,7 +115,8 @@
         "settings": [
           "Browser shortcut"
         ],
-        "priority": 20
+        "priority": 20,
+        "command": "/stash"
       }
     ]
   }

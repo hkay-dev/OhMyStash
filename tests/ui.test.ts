@@ -10,6 +10,7 @@ import {
   type ListOptions,
   OVERLAY_OPTIONS,
   selectOption,
+  type SelectOptionSettings,
   type ShortcutHintDeclaration,
   showList,
 } from "../extensions/ui";
@@ -20,6 +21,7 @@ const CTRL = nerd["key.ctrlMac"];
 const ALT = nerd["key.altMac"];
 const SHIFT = nerd["key.shift"];
 const CMD = nerd["key.superMac"];
+const SEARCH = nerd["icon.search"];
 const KEY = {
   up: "\u001b[A",
   down: "\u001b[B",
@@ -238,7 +240,7 @@ test("declares its shortcut settings in hkay.shortcutHints, outside the omp bloc
   const hints: ShortcutHintDeclaration[] = manifest.hkay.shortcutHints;
   expect(hints).toEqual([
     { label: "stash", settings: ["Stash shortcut"], priority: 10 },
-    { label: "stashes", settings: ["Browser shortcut"], priority: 20 },
+    { label: "stashes", settings: ["Browser shortcut"], priority: 20, command: "/stash" },
   ]);
   expect(manifest.omp.hkay).toBeUndefined();
   const defaults = hints.flatMap((hint) => hint.settings.map((setting) => {
@@ -281,7 +283,7 @@ test("switches to a compact layout under 12 rows", () => {
   const compact = openList(options, 11).list.render(80);
   expect(compact).toHaveLength(11);
   expect(compact[0]).toStartWith("┌ Files · 100 ─");
-  expect(compact[1]).toStartWith("│ Search  ");
+  expect(compact[1]).toStartWith(`│ ${SEARCH} Search  `);
   expect(compact[1]).toContain("File or folder");
   expect(compact.filter((line) => line.startsWith("├"))).toEqual([]);
   expect(compact.join("\n")).not.toContain("of 100");
@@ -299,7 +301,7 @@ test("switches to a compact layout under 12 rows", () => {
   // Five rows still frame the title, search row, one item, and footer.
   const tiny = openList(options, 5).list.render(80);
   expect(tiny).toHaveLength(5);
-  ["┌ Files · 100 ─", "│ Search  ", "│ › file-000.ts ", "│ Enter Open  Esc Close ", "└─"]
+  ["┌ Files · 100 ─", `│ ${SEARCH} Search  `, "│ › file-000.ts ", "│ Enter Open  Esc Close ", "└─"]
     .forEach((start, row) => expect(tiny[row]).toStartWith(start));
 });
 
@@ -555,10 +557,93 @@ test("styles the selected row and lets OMP use the terminal cursor in the search
   expect(list.render(80)[1]).not.toContain("\u001b_pi:c\u0007");
 });
 
+test("types printable keys into the search, even keys that actions use", async () => {
+  const ran: string[] = [];
+  const actions = ["d", "space", "q", "Q", "shift+q", "1", "ctrl+o", "alt+d"]
+    .map((key) => ({ key, label: key, run: () => void ran.push(key) }));
+  const { list, outcome } = openList(fileOptions(files(5), { actions }), 20);
+  // One key per event, as a terminal sends them, plus Kitty's CSI-u forms of q and Shift+Q.
+  press(list, ["d", " ", "q", "Q", "1", "\u001b[113u", "\u001b[113:81;2u"]);
+  await Promise.resolve();
+  expect(ran).toEqual([]);
+  expect(list.render(80)[1]).toContain("d qQ1qQ");
+  // Modifier combinations still run their actions.
+  press(list, [KEY.ctrlO, "\u001bd"]);
+  expect(ran).toEqual(["ctrl+o", "alt+d"]);
+  expect(outcome.closed).toBeFalse();
+});
+
+test("ignores action keys while an async action is pending", async () => {
+  let runs = 0;
+  const settles: PromiseWithResolvers<string | undefined>[] = [];
+  const { list, tui, result, outcome } = openList(fileOptions(files(3), {
+    actions: [{
+      key: "enter",
+      label: "Open",
+      run: () => {
+        runs += 1;
+        const pending = Promise.withResolvers<string | undefined>();
+        settles.push(pending);
+        return pending.promise;
+      },
+    }],
+  }), 20);
+  list.handleInput(KEY.enter);
+  list.handleInput(KEY.enter);
+  expect(runs).toBe(1);
+  // Other keys still work meanwhile.
+  list.handleInput(KEY.down);
+  expect(list.render(80).join("\n")).toContain("› file-001.ts");
+  // A rejection repaints the open list and turns the actions back on. The list's handlers were attached
+  // first, so they have run once the promise settles here.
+  const renders = tui.renders;
+  settles[0]?.reject(new Error("the action failed"));
+  await settles[0]?.promise.catch(() => undefined);
+  expect(tui.renders).toBeGreaterThan(renders);
+  expect(outcome.closed).toBeFalse();
+  list.handleInput(KEY.enter);
+  list.handleInput(KEY.enter);
+  expect(runs).toBe(2);
+  // So does a result of undefined.
+  settles[1]?.resolve(undefined);
+  await settles[1]?.promise;
+  expect(outcome.closed).toBeFalse();
+  list.handleInput(KEY.enter);
+  expect(runs).toBe(3);
+  settles[2]?.resolve("file-001.ts");
+  expect(await result).toBe("file-001.ts");
+});
+
+test("draws the search glyph unless icons are off", () => {
+  const icons = openList(fileOptions(files(3)), 20).list.render(80);
+  expect(icons[1]).toStartWith(`│ ${SEARCH} Search  `);
+  expect(icons[1]).toContain("File or folder");
+  const plain = openList(fileOptions(files(3), { icons: false }), 20).list.render(80);
+  expect(plain[1]).toStartWith("│ Search  ");
+  expect(plain.join("\n")).not.toContain(SEARCH);
+});
+
+test("keeps the selection on a rebuilt item by its search text when there is no id", () => {
+  let items = files(5);
+  const { list } = openList(fileOptions(() => items), 20);
+  press(list, [KEY.down, KEY.down]);
+  items = items.map((file) => ({ ...file }));
+  expect(list.render(80).join("\n")).toContain("› file-002.ts");
+  list.handleInput(KEY.down);
+  items = items.map((file) => ({ ...file }));
+  expect(list.render(80).join("\n")).toContain("› file-003.ts");
+});
+
 // selectOption 1.10.4 and now, driven with the same keys and terminal sizes.
 type Picker = { handleInput(data: string): void; render(width: number): readonly string[]; focused: boolean };
 
-function mountPicker(select: typeof selectOption, tui: FakeTui, options: string[], iconKey?: string) {
+function mountPicker(
+  select: typeof selectOption,
+  tui: FakeTui,
+  options: string[],
+  iconKey?: string,
+  settings?: SelectOptionSettings,
+) {
   let component: Picker | undefined;
   let mountOptions: unknown;
   const ctx = {
@@ -572,7 +657,7 @@ function mountPicker(select: typeof selectOption, tui: FakeTui, options: string[
     },
   } as unknown as ExtensionContext;
   const outcome: Outcome<string> = { closed: false };
-  void select(ctx, "Choose a model", options, iconKey).then((value) => Object.assign(outcome, { closed: true, value }));
+  void select(ctx, "Choose a model", options, iconKey, settings).then((value) => Object.assign(outcome, { closed: true, value }));
   if (!component) throw new Error("The picker was not presented");
   return { component, mountOptions, outcome };
 }
@@ -658,4 +743,25 @@ test("cancels selectOption with Ctrl+C as 1.10.4 did", async () => {
     await Promise.resolve();
     expect(picker.outcome).toEqual({ closed: true, value: undefined });
   }
+});
+
+test("selectOption drops its glyphs without icons and opens on the selected option", async () => {
+  const options = Array.from({ length: 30 }, (_, index) => `Option ${String(index).padStart(2, "0")}`);
+  const plain = mountPicker(selectOption, fakeTui(20), options, "icon.model", { icons: false, selected: "Option 24" });
+  const lines = plain.component.render(80).map((line) => Bun.stripANSI(line));
+  expect(lines[0]).toStartWith("┌ Choose a model ─");
+  expect(lines[1]).toStartWith("│ / ");
+  expect(lines.join("\n")).not.toContain(nerd["icon.model"]);
+  expect(lines.join("\n")).not.toContain(SEARCH);
+  expect(lines.find((line) => line.includes(" > "))).toStartWith("│ > Option 24");
+  plain.component.handleInput(KEY.enter);
+  await Promise.resolve();
+  expect(plain.outcome).toEqual({ closed: true, value: "Option 24" });
+
+  // Icons stay on by default, and an option that isn't listed selects the first one.
+  const icons = mountPicker(selectOption, fakeTui(20), options, "icon.model", { selected: "Missing" });
+  const iconLines = icons.component.render(80).map((line) => Bun.stripANSI(line));
+  expect(iconLines[0]).toStartWith(`┌ ${nerd["icon.model"]} Choose a model ─`);
+  expect(iconLines[1]).toStartWith(`│ ${SEARCH} `);
+  expect(iconLines.find((line) => line.includes(" > "))).toStartWith("│ > Option 00");
 });

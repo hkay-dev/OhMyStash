@@ -3,6 +3,7 @@ import type { ExtensionContext, ExtensionCustomOptions, Theme } from "@oh-my-pi/
 import {
   type Component,
   type Focusable,
+  extractPrintableText,
   fuzzyFilter,
   Input,
   Key,
@@ -66,6 +67,11 @@ export interface ShortcutHintDeclaration {
   settings: string[];
   /** Sort order: lower comes first. */
   priority: number;
+  /**
+   * A slash command that does the same thing, such as `/stash`. A reader can show it instead of the keys
+   * when every key for this hint is blank or `none`.
+   */
+  command?: string;
 }
 
 // Key labels after formatKey in @oh-my-pi/pi-tui 18.10.3 src/key-hint-format.ts, which compiled OMP
@@ -177,14 +183,20 @@ export interface ListState<T> {
 
 /** A footer action of a list. */
 export interface ListAction<T, R> {
-  /** OMP key id, such as `enter`, `ctrl+o`, or `tab`. The primary action uses `enter`. */
+  /**
+   * OMP key id, such as `enter`, `ctrl+o`, `alt+d`, or `tab`. The primary action uses `enter`. While the
+   * search field has focus, a bare printable key (a letter, digit, or symbol, a shifted letter, or `space`)
+   * always types into the search and never runs an action, so use `enter`, `tab`, another named key, or a
+   * ctrl, alt, or super combination.
+   */
   key: string;
   /** Footer label, such as `Open`. */
   label: string;
   /**
    * Runs with the selected match, or undefined when nothing matches. Return a result to close the list with
-   * it, or undefined to keep the list open and repaint it. A promise is awaited; if it rejects, the list
-   * stays open, so report your own errors.
+   * it, or undefined to keep the list open and repaint it. A promise is awaited, and action keys do nothing
+   * until it settles. If it rejects, the list repaints and stays open with its actions back on, so report
+   * your own errors.
    */
   run(item: T | undefined): R | undefined | void | PromiseLike<R | undefined | void>;
 }
@@ -201,7 +213,11 @@ export interface ListOptions<T, R> {
   search?(item: T): string;
   /** Replaces the word search: returns the items to show for a search, in display order. */
   filter?(items: readonly T[], query: string): readonly T[];
-  /** Identifies an item across changes to the items, so the selection stays on it. Defaults to the item itself. */
+  /**
+   * Identifies an item across changes to the items, so the selection stays on it. Pass it when `items()`
+   * builds new objects. Without it, the selection stays on the same object, or else on the first item with
+   * the same search text.
+   */
   id?(item: T): unknown;
   /** The item to select when the list opens. */
   selected?: T;
@@ -211,6 +227,8 @@ export interface ListOptions<T, R> {
   prompt?: string;
   /** Dim text in the empty search field. Defaults to `Type to search`. */
   placeholder?: string;
+  /** Draws the Nerd Font search glyph before the label. Defaults to true; pass your plugin's Show icons setting. */
+  icons?: boolean;
   /** Footer actions in display order. Esc always closes the list and is listed last. */
   actions?: readonly ListAction<T, R>[];
   /** Another key that closes the list, such as the shortcut that opened it. Blank or `none` adds no key. */
@@ -256,11 +274,12 @@ function listComponent<T, R>(
   input.focused = true;
   const source = options.items;
   const id = (item: T): unknown => (options.id ? options.id(item) : item);
+  const searchText = (item: T): string => (options.search ? options.search(item) : String(item));
   const matchWords = (items: readonly T[], query: string): readonly T[] => {
     const words = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
     if (words.length === 0) return items;
     return items.filter((item) => {
-      const text = (options.search ? options.search(item) : String(item)).toLocaleLowerCase();
+      const text = searchText(item).toLocaleLowerCase();
       return words.every((word) => text.includes(word));
     });
   };
@@ -268,9 +287,24 @@ function listComponent<T, R>(
   const toggleKey = toggle && toggle.toLowerCase() !== "none" ? (toggle as KeyId) : undefined;
   let filtered: { items: readonly T[]; query: string; matches: readonly T[] } | undefined;
   let index = 0;
-  // The selected item's id, so the selection stays on that item when the items change.
-  let anchored = options.selected !== undefined;
-  let anchor = anchored ? id(options.selected as T) : undefined;
+  // The selected item's id, so the selection stays on that item when the items change. Without an `id`
+  // option, its search text finds the item again after `items()` rebuilds it as a new object.
+  let anchored = false;
+  let anchor: unknown;
+  let anchorText: string | undefined;
+  const anchorOn = (item: T | undefined, found: boolean): void => {
+    anchored = found;
+    anchor = found ? id(item as T) : undefined;
+    anchorText = found && !options.id ? searchText(item as T) : undefined;
+  };
+  anchorOn(options.selected, options.selected !== undefined);
+  const anchorIndex = (matches: readonly T[]): number => {
+    const same = matches.findIndex((item) => Object.is(id(item), anchor));
+    if (same !== -1 || anchorText === undefined) return same;
+    return matches.findIndex((item) => searchText(item) === anchorText);
+  };
+  // An action that returned a promise; its keys do nothing until it settles.
+  let pending = false;
   const view = (): ListView<T> => {
     const items = typeof source === "function" ? source() : source;
     const query = input.getValue();
@@ -280,16 +314,25 @@ function listComponent<T, R>(
     }
     const { matches } = filtered;
     if (!(anchored && index < matches.length && Object.is(id(matches[index] as T), anchor))) {
-      index = anchored ? Math.max(0, matches.findIndex((item) => Object.is(id(item), anchor))) : 0;
+      index = anchored ? Math.max(0, anchorIndex(matches)) : 0;
     }
     const selected = matches[index];
-    anchored = index < matches.length;
-    anchor = anchored ? id(selected as T) : undefined;
+    anchorOn(selected, index < matches.length);
     return { theme, input, rows: Math.max(1, tui.terminal.rows), query, matches, total: items.length, selected, index };
   };
   const settle = (result: unknown): void => {
     if (isPromiseLike(result)) {
-      result.then(settle, () => tui.requestRender());
+      pending = true;
+      result.then(
+        (value) => {
+          pending = false;
+          settle(value);
+        },
+        () => {
+          pending = false;
+          tui.requestRender();
+        },
+      );
     } else if (result === undefined) {
       tui.requestRender();
     } else {
@@ -307,24 +350,25 @@ function listComponent<T, R>(
       input.invalidate();
     },
     select(item: T) {
-      anchored = true;
-      anchor = id(item);
+      anchorOn(item, true);
       index = 0;
       tui.requestRender();
     },
     handleInput(data: string) {
+      // A bare printable key, shifted letters and space included, types into a focused search field.
+      const typed = input.focused && extractPrintableText(data) !== undefined;
       if (
         matchesKey(data, Key.escape) ||
         matchesKey(data, Key.ctrl("c")) ||
-        (toggleKey !== undefined && matchesKey(data, toggleKey))
+        (!typed && toggleKey !== undefined && matchesKey(data, toggleKey))
       ) {
         done(undefined);
         return;
       }
-      const action = options.actions?.find((candidate) => matchesKey(data, candidate.key as KeyId));
+      const action = typed ? undefined : options.actions?.find((candidate) => matchesKey(data, candidate.key as KeyId));
       const list = view();
       if (action) {
-        settle(action.run(list.selected));
+        if (!pending) settle(action.run(list.selected));
         return;
       }
       const target = matchesKey(data, Key.up) ? list.index - 1
@@ -343,8 +387,7 @@ function listComponent<T, R>(
         }
       } else {
         index = Math.max(0, Math.min(list.matches.length - 1, target));
-        anchored = index < list.matches.length;
-        anchor = anchored ? id(list.matches[index] as T) : undefined;
+        anchorOn(list.matches[index], index < list.matches.length);
       }
       tui.requestRender();
     },
@@ -380,7 +423,9 @@ function drawList<T, R>(options: ListOptions<T, R>, list: ListView<T>, width: nu
     ? options.emptyLabel(state)
     : options.emptyLabel ?? (state.total ? "No matching items" : "No items");
 
-  const label = options.prompt ?? "Search";
+  const label = [options.icons === false ? "" : extensionIcon("icon.search"), options.prompt ?? "Search"]
+    .filter(Boolean)
+    .join(" ");
   const labelText = label ? `${label}  ` : "";
   // A narrow row gives its room to the search field instead of the label.
   const labelWidth = labelText && inner - visibleWidth(labelText) >= 10 ? visibleWidth(labelText) : 0;
@@ -477,8 +522,9 @@ export function showList<T, R>(ctx: ExtensionContext, options: ListOptions<T, R>
   );
 }
 
-// selectOption's own drawing, unchanged since 1.10.4 so its pickers keep their look.
-function drawOptions(title: string, list: ListView<string>, width: number) {
+// selectOption's own drawing, unchanged since 1.10.4 so its pickers keep their look. Without icons the
+// search glyph is a slash.
+function drawOptions(title: string, list: ListView<string>, width: number, icons: boolean) {
   const { theme, input: searchInput, matches: filtered, index: selected } = list;
   const renderWidth = Math.max(1, Math.floor(width));
   // The overlay may fill the terminal; OMP drops taller output from the top, title first.
@@ -513,7 +559,7 @@ function drawOptions(title: string, list: ListView<string>, width: number) {
   );
   const lines = [frame.top(title)];
   if (showSearch) {
-    const prefix = ` ${theme.fg("accent", extensionIcon("icon.search"))} `;
+    const prefix = ` ${theme.fg("accent", icons ? extensionIcon("icon.search") : "/")} `;
     const fieldWidth = Math.max(1, contentWidth - visibleWidth(prefix));
     const field = searchInput.render(searchInput.getValue() ? fieldWidth : 1)[0] ?? "";
     const placeholder = searchInput.getValue() ? "" : theme.fg("dim", "Type to search");
@@ -541,14 +587,24 @@ function drawOptions(title: string, list: ListView<string>, width: number) {
   return { lines, pageSize: pageRows };
 }
 
+/** Display settings for `selectOption`. */
+export interface SelectOptionSettings {
+  /** Draws the Nerd Font title and search glyphs. Defaults to true; pass your plugin's Show icons setting. */
+  icons?: boolean;
+  /** The option to select when the picker opens, if it is one of the options. */
+  selected?: string;
+}
+
 export function selectOption(
   ctx: ExtensionContext,
   title: string,
   options: string[],
   iconKey?: string,
+  settings?: SelectOptionSettings,
 ): Promise<string | undefined> {
   return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
-    const glyph = iconKey ? extensionIcon(iconKey) : "";
+    const icons = settings?.icons ?? true;
+    const glyph = icons && iconKey ? extensionIcon(iconKey) : "";
     const popupTitle = glyph ? `${glyph} ${title}` : title;
     const list: ListOptions<string, string> = {
       items: options,
@@ -556,8 +612,9 @@ export function selectOption(
       filter: (items, query) => fuzzyFilter(items as string[], query, (option) => option),
       renderItem: (option) => [option],
       actions: [{ key: "enter", label: "Select", run: (option) => option }],
+      ...(settings?.selected === undefined ? {} : { selected: settings.selected }),
     };
     const pageSize = Math.max(1, Math.min(12, tui.terminal.rows - 5));
-    return listComponent(tui, theme, list, done, (view, width) => drawOptions(popupTitle, view, width), pageSize, false);
+    return listComponent(tui, theme, list, done, (view, width) => drawOptions(popupTitle, view, width, icons), pageSize, false);
   }, OVERLAY_OPTIONS);
 }
