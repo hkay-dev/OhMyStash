@@ -49,11 +49,14 @@ function queryNative(action: NativeAction, path: string, root?: string): NativeR
     if (key.toLowerCase() === "psmodulepath") delete environment[key];
   }
   environment.PSModulePath = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
+  // The helper caches its compiled code in the private directory it checks: the requested
+  // directory itself, or a checked file's storage root.
+  const cache = action === "check" ? root : path;
   const result = spawnSync(
     command,
     ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helperPath],
     {
-      input: JSON.stringify({ action, path, root }),
+      input: JSON.stringify({ action, path, root, cache }),
       encoding: "utf8",
       env: environment,
       windowsHide: true,
@@ -223,13 +226,47 @@ export function createStoragePermissions(overrides: Partial<PermissionDependenci
     } catch {}
   }
 
+  // Grants a file this process just published inside the scope's tree, from a temp it created with
+  // O_EXCL in a directory the snapshot found private, so later checks in the same scope don't launch
+  // the helper again. Windows gives such a file that directory's inherited account-only ACL. A file
+  // that doesn't fit drops any older grant for its path, so its next check asks the helper.
+  function trustCreatedFile(path: string): void {
+    if (!scope) return;
+    const key = pathKey(path);
+    if (!key.startsWith(`${scope.root}/`)) return;
+    scope.records.delete(key);
+    try {
+      const parentPath = dirname(resolve(path));
+      const parent = scope.records.get(pathKey(parentPath));
+      const parentNow = dependencies.lstat(parentPath);
+      const current = dependencies.lstat(path);
+      if (
+        parent?.stat?.isDirectory() && parent.native.safe && !parentNow.isSymbolicLink() &&
+        sameIdentity(parent.stat, parentNow) && !current.isSymbolicLink() && current.isFile() && current.nlink === 1
+      ) {
+        scope.records.set(key, { native: { path: resolve(path), safe: true }, stat: current });
+      }
+    } catch {}
+  }
+
   function withPrivateStoragePermissions<T>(root: string, action: () => T): T {
     const previous = scope;
-    if (dependencies.platform === "win32") {
-      const records = nativeRecords("tree", root);
-      const key = pathKey(root);
+    const key = pathKey(root);
+    // A step inside another scope over the same tree reuses that scope's snapshot.
+    const nested = previous !== undefined && (key === previous.root || key.startsWith(`${previous.root}/`));
+    if (dependencies.platform === "win32" && !nested) {
+      const before = dependencies.lstat(root);
+      if (before.isSymbolicLink() || !before.isDirectory()) throw new Error("OMS storage must be a private real directory");
+      // The first scope over a root also prepares it, so one helper launch both converts a new
+      // directory's inherited ACL and returns the snapshot. Later scopes only read the tree, so a
+      // prepared root whose ACL was broadened since is rejected instead of converted again.
+      const prepared = preparedRoots.get(key);
+      const records = nativeRecords(prepared && sameIdentity(prepared.stat, before) ? "tree" : "prepare", root);
       const directory = records.get(key);
-      if (!directory?.stat?.isDirectory()) throw new Error("OMS storage must be a private real directory");
+      if (!directory?.stat?.isDirectory() || !sameIdentity(before, directory.stat)) {
+        throw new Error("OMS storage must be a private real directory");
+      }
+      preparedRoots.set(key, { path: resolve(root), stat: directory.stat });
       scope = { root: key, records };
     }
     try {
@@ -248,6 +285,7 @@ export function createStoragePermissions(overrides: Partial<PermissionDependenci
     preparePrivateStorageDirectory,
     hasPrivateStoragePermissions,
     invalidatePrivateStoragePermission,
+    trustCreatedFile,
     withPrivateStoragePermissions,
   };
 }
@@ -256,5 +294,6 @@ export const {
   preparePrivateStorageDirectory,
   hasPrivateStoragePermissions,
   invalidatePrivateStoragePermission,
+  trustCreatedFile,
   withPrivateStoragePermissions,
 } = createStoragePermissions();

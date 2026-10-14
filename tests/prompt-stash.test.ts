@@ -50,6 +50,12 @@ const TEST_ORIGIN = {
   sessionStartedAt: TEST_SESSION_STARTED_AT,
   workspaceName: "ohmystash-tests",
 };
+// session_start and the UI only run for the main TUI session, as OMP describes it in ctx.agent.
+const MAIN_AGENT = { kind: "main", id: "Main", name: "main", depth: 0 } as const;
+// Reloads the plugin settings the way OMP's session_start does.
+const CONFIG_CONTEXT = {
+  cwd: agentDir, mode: "tui", agent: MAIN_AGENT, ui: { setEditorComponent() {} },
+} as unknown as ExtensionContext;
 let stashCommand: { handler: (args: string, ctx: ExtensionContext) => Promise<void> | void };
 let stashShortcut: { handler: (ctx: ExtensionContext) => Promise<void> | void };
 let refreshConfig: ((event: unknown, ctx: ExtensionContext) => Promise<void>) | undefined;
@@ -161,7 +167,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   resetStash();
   writeSettings({ "Time format": "12-hour clock" });
-  await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+  await refreshConfig?.({}, CONFIG_CONTEXT);
   const command = spyOn(externalEditor, "getEditorCommand").mockImplementation(
     () => process.env.VISUAL?.trim() || process.env.EDITOR?.trim() || undefined,
   );
@@ -188,6 +194,7 @@ test("rejects linked storage directories on every platform", async () => {
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       custom() {
@@ -211,38 +218,44 @@ test("rejects linked storage directories on every platform", async () => {
 });
 
 
-test("search Enter restores and q queues without an apply step", async () => {
-  for (const [key, expected] of [
-    ["\r", "test prompt"],
-    ["q", "/queue test prompt"],
-  ] as const) {
+test("search types q and Q one key per event, and Tab hands the letters back to the actions", async () => {
+  writeStashFixture("Write the SQL migration");
+  const outcomes: Array<{ editor: string; frame: string }> = [];
+  // Each key is its own event, as a terminal sends them.
+  for (const keys of [["/", "S", "Q", "L"], ["/", "s", "q", "l", "\t", "q"], ["/", "s", "q", "l", "\r"]]) {
     let editor = "";
-    const terminal = { rows: 40, write: () => {} };
+    let frame = "";
     const context = {
       cwd: agentDir,
       mode: "tui",
+      agent: MAIN_AGENT,
       sessionManager: TEST_SESSION_MANAGER,
       ui: {
         custom(factory: Function) {
           const { promise, resolve } = Promise.withResolvers<unknown>();
-          const component = browserComponent(factory, resolve, terminal);
-          component.handleInput("/");
-          component.handleInput("test");
-          component.handleInput(key);
+          const component = browserComponent(factory, resolve, { rows: 40, write: () => {} });
+          for (const key of keys) component.handleInput(key);
+          frame = component.render(120).join("\n");
+          // Closes a browser the keys left open.
+          component.handleInput("\u0003");
           return promise;
         },
         getEditorText: () => "",
-
         setEditorText(value: string) {
           editor = value;
         },
         notify() {},
       },
     } as unknown as ExtensionContext;
-
     await stashCommand.handler("", context);
-    expect(editor).toBe(expected);
+    outcomes.push({ editor, frame });
   }
+  const [typed, queued, restored] = outcomes;
+  expect(typed?.editor).toBe("");
+  expect(typed?.frame).toContain("/SQL");
+  expect(typed?.frame).toContain("Write the SQL migration");
+  expect(queued?.editor).toBe("/queue Write the SQL migration");
+  expect(restored?.editor).toBe("Write the SQL migration");
 });
 
 test("submits repeated Shift+Q actions as ordered slash queue commands", async () => {
@@ -253,6 +266,7 @@ test("submits repeated Shift+Q actions as ordered slash queue commands", async (
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager,
     ui: {
       setEditorComponent(factory: Function) {
@@ -271,6 +285,8 @@ test("submits repeated Shift+Q actions as ordered slash queue commands", async (
         if (browserCalls === 0) {
           component.handleInput("/");
           component.handleInput("test prompt");
+          // Letters type into the search, so Tab first hands Shift+Q back to the actions.
+          component.handleInput("\t");
           component.handleInput("Q");
         } else if (browserCalls === 1) {
           component.handleInput("Q");
@@ -322,7 +338,7 @@ test("protects image-only drafts and round-trips 64 repeated images", async () =
   }));
   const markers = Array.from({ length: 64 }, (_, index) => `[Image #${index + 1}]`).join(" ");
   const context = {
-    cwd: agentDir, mode: "tui",
+    cwd: agentDir, mode: "tui", agent: MAIN_AGENT,
     sessionManager: { ...TEST_SESSION_MANAGER, getSessionId: () => sessionId },
     ui: {
       setEditorComponent(factory: Function) {
@@ -387,6 +403,7 @@ test("search accepts d as query text until Tab selects the filtered result", asy
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       custom(factory: Function) {
@@ -416,6 +433,7 @@ test("switches exact timestamps between 12-hour and 24-hour clocks", async () =>
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       getEditorText: () => editor,
@@ -432,14 +450,14 @@ test("switches exact timestamps between 12-hour and 24-hour clocks", async () =>
   expect(notifications.at(-1)).toMatch(/\b(?:AM|PM)\b/i);
 
   writeSettings({ "Time format": "24-hour clock" });
-  await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+  await refreshConfig?.({}, CONFIG_CONTEXT);
   editor = "";
   await stashCommand.handler("restore", context);
 
   expect(notifications.at(-1)).not.toMatch(/\b(?:AM|PM)\b/i);
   expect(notifications.at(-1)).toMatch(/\d{2}:\d{2}:\d{2}/);
   writeSettings({ "Time format": "12-hour clock" });
-  await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+  await refreshConfig?.({}, CONFIG_CONTEXT);
 });
 
 test("edits a stash with OMP's editor and honors an explicit editor command", async () => {
@@ -455,6 +473,7 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       custom(factory: Function) {
@@ -501,7 +520,7 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
       "Time format": "12-hour clock",
       "Editor command": "",
     });
-    await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+    await refreshConfig?.({}, CONFIG_CONTEXT);
     await stashCommand.handler("", context);
     expect(editorCalls).toBe(1);
     expect(stopCalls).toBe(0);
@@ -520,7 +539,7 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
       "Time format": "12-hour clock",
       "Editor command": "false",
     });
-    await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+    await refreshConfig?.({}, CONFIG_CONTEXT);
     await stashCommand.handler("", context);
     expect(editorCalls).toBe(0);
     expect(stopCalls).toBe(1);
@@ -531,7 +550,7 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
     if (previousEditor === undefined) delete process.env.EDITOR;
     else process.env.EDITOR = previousEditor;
     writeSettings({ "Time format": "12-hour clock" });
-    await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+    await refreshConfig?.({}, CONFIG_CONTEXT);
   }
 });
 
@@ -551,6 +570,7 @@ test("round-trips an OMP image plus a file-backed large paste and queues it with
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager,
     ui: {
       setEditorComponent(factory: Function) {
@@ -581,6 +601,7 @@ test("round-trips an OMP image plus a file-backed large paste and queues it with
         if (browserCalls === 0) {
           component.handleInput("/");
           component.handleInput("Large pasted prompt");
+          if (browserMode === "queue") component.handleInput("\t");
           component.handleInput(browserMode === "restore" ? "\r" : "Q");
         } else {
           component.handleInput("\u001b");
@@ -644,6 +665,7 @@ test("round-trips an OMP image plus a file-backed large paste and queues it with
   expect(editor.pendingImages[0]?.detail).toBe("original");
   const attachmentDir = join(agentDir, "prompt-stash", "attachments");
   const assetsBefore = readdirSync(attachmentDir).sort();
+  // The seeded stash is dated later, so this isn't a repeat of this chat's newest stash.
   await stashShortcut.handler(context);
   expect(editor.getText()).toBe("");
   expect(readdirSync(attachmentDir).sort()).toEqual(assetsBefore);
@@ -661,16 +683,30 @@ test("round-trips an OMP image plus a file-backed large paste and queues it with
     readdirSync(join(agentDir, "prompt-stash")).filter((file) => file.endsWith(".json")),
   ).toHaveLength(stashFiles.length + 1);
 
+  // Same-size garbage fails the content hash check. The display link shares the damaged bytes.
   const imageRef = attachmentEntry!.attachments!.find((attachment) => attachment.kind === "image")!.ref;
   const imagePath = join(attachmentDir, imageRef.slice("sha256:".length));
   const imageBytes = readFileSync(imagePath);
-  writeFileSync(imagePath, "corrupt", { mode: 0o600 });
+  writeFileSync(imagePath, Buffer.alloc(imageBytes.length, 0x21), { mode: 0o600 });
   browserCalls = 0;
   browserMode = "restore";
   await stashCommand.handler("", context);
-  expect(errors).toHaveLength(1);
+  // The text and the large paste still come back, and the damaged image is named.
+  expect(errors).toEqual([]);
+  expect(notifications.at(-1)).toContain("couldn't restore Image #1 (damaged)");
+  expect(editor.pendingImages).toEqual([]);
+  expect(editor.getExpandedText()).toBe(`attachment [Image #1 unavailable]\n${largePaste}`);
+  editor.clearDraft();
+
+  // Stashing the same image again replaces the damaged copy with the good bytes.
+  editor.setText("[Image #1] stashed again");
+  editor.pendingImages = [{ type: "image", data: imageData, mimeType: "image/png" }];
+  editor.pendingImageLinks = [undefined];
+  await stashShortcut.handler(context);
+  expect(errors).toEqual([]);
   expect(editor.getText()).toBe("");
-  writeFileSync(imagePath, imageBytes, { mode: 0o600 });
+  expect(readFileSync(imagePath)).toEqual(imageBytes);
+  expect(readFileSync(`${imagePath}.png`)).toEqual(imageBytes);
 
   const imageMarkers = Array.from({ length: 64 }, (_, index) => `[Image #${index + 1}]`).join(" ");
   const image = { type: "image" as const, data: imageData, mimeType: "image/png" };
@@ -698,6 +734,7 @@ test("editing a file-backed attachment stash preserves image refs and lock state
   const saveContext = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: { ...TEST_SESSION_MANAGER },
     ui: {
       setEditorComponent(factory: Function) {
@@ -719,6 +756,7 @@ test("editing a file-backed attachment stash preserves image refs and lock state
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       custom(factory: Function) {
@@ -787,7 +825,7 @@ test("rejects an edit that would exceed the attachment limit and keeps the saved
   let calls = 0;
   const notices: string[] = [];
   const context = {
-    cwd: agentDir, mode: "tui", sessionManager: TEST_SESSION_MANAGER,
+    cwd: agentDir, mode: "tui", agent: MAIN_AGENT, sessionManager: TEST_SESSION_MANAGER,
     ui: {
       custom(factory: Function) {
         const { promise, resolve } = Promise.withResolvers<unknown>();
@@ -848,6 +886,7 @@ test("recovers complete crash temps and quarantines incomplete bytes without dis
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       getEditorText: () => editor,
@@ -883,7 +922,7 @@ test("counts a cached stash once when its recovery file is also present", async 
   let requestDelete = false;
   let confirmation = "";
   const context = {
-    cwd: agentDir, mode: "tui",
+    cwd: agentDir, mode: "tui", agent: MAIN_AGENT,
     sessionManager: { ...TEST_SESSION_MANAGER, getSessionId: () => sessionId },
     ui: {
       custom(factory: Function) {
@@ -928,6 +967,7 @@ test("never deletes another writer's replacement temp after an edit collision", 
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       custom(factory: Function) {
@@ -988,6 +1028,7 @@ test("preserves both results when concurrent editors start from one stash revisi
     const context = {
       cwd: agentDir,
       mode: "tui",
+      agent: MAIN_AGENT,
       sessionManager: TEST_SESSION_MANAGER,
       ui: {
         custom(factory: Function) {
@@ -1069,7 +1110,7 @@ test.each(["e", "l"])("keeps a newly published stash when applying %s to an olde
   delete process.env.EDITOR;
   let calls = 0;
   const context = {
-    cwd: agentDir, mode: "tui",
+    cwd: agentDir, mode: "tui", agent: MAIN_AGENT,
     sessionManager: { ...TEST_SESSION_MANAGER, getSessionId: () => sessionId },
     ui: {
       custom(factory: Function) {
@@ -1142,6 +1183,7 @@ test("preserves concurrent edits that begin from one recoverable temp", async ()
     const context = {
       cwd: agentDir,
       mode: "tui",
+      agent: MAIN_AGENT,
       sessionManager: TEST_SESSION_MANAGER,
       ui: {
         custom(factory: Function) {
@@ -1232,6 +1274,7 @@ test("defaults to this chat and exposes labeled global stashes without losing se
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       custom(factory: Function) {
@@ -1297,6 +1340,7 @@ test("restores the newest stash from the current chat instead of a newer global 
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       getEditorText: () => "",
@@ -1323,6 +1367,7 @@ test("never restores another chat when the current chat has no stashes", async (
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: {
       getSessionId: () => emptySessionId,
       getSessionName: () => "Empty Chat",
@@ -1382,6 +1427,7 @@ test("keeps an empty current scope open and bulk-deletes only that scope", async
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: isolatedManager,
     ui: {
       custom(factory: Function) {
@@ -1425,21 +1471,21 @@ test("keeps an empty current scope open and bulk-deletes only that scope", async
   }
 });
 
-test("refuses to delete a stash changed after the browser loaded", async () => {
+test("keeps a stash another session changed, says so, and reopens the browser on it", async () => {
   const fixture = writeStashFixture("stale deletion target");
   const notifications: string[] = [];
+  const frames: string[] = [];
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       custom(factory: Function) {
         const { promise, resolve } = Promise.withResolvers<unknown>();
         const component = browserComponent(factory, resolve, { rows: 60, write: () => {} });
-        component.handleInput("/");
-        for (const character of "stale deletion target") component.handleInput(character);
-        component.handleInput("\t");
-        component.handleInput("d");
+        frames.push(component.render(120).join("\n"));
+        component.handleInput(frames.length === 1 ? "d" : "\u001b");
         return promise;
       },
       confirm() {
@@ -1457,12 +1503,50 @@ test("refuses to delete a stash changed after the browser loaded", async () => {
 
   try {
     await stashCommand.handler("", context);
-    expect(existsSync(fixture.path)).toBeTrue();
     expect(readFileSync(fixture.path, "utf8")).toContain("concurrent replacement");
-    expect(notifications.length).toBeGreaterThan(0);
+    expect(notifications).toEqual(["That stash changed in another session, so OMS reloaded the browser"]);
+    expect(frames).toHaveLength(2);
+    expect(frames[1]?.split("\n").find((line) => line.includes(" > "))).toContain("concurrent replacement");
   } finally {
     rmSync(fixture.path, { force: true });
   }
+});
+
+test("reopens the browser on the stash it acted on, or on the same row once it's deleted", async () => {
+  for (const name of ["alpha", "bravo", "charlie", "delta", "echo"]) writeStashFixture(`reselect ${name}`);
+  const selections: string[] = [];
+  // Each opening's keys. Another session adds a newer stash during the first, so bravo moves down a row.
+  const down = "\u001b[B";
+  const openings = [[down, down, down, "l"], ["d"], ["l"], ["d"], ["\u001b"]];
+  const context = {
+    cwd: agentDir,
+    mode: "tui",
+    agent: MAIN_AGENT,
+    sessionManager: TEST_SESSION_MANAGER,
+    ui: {
+      custom(factory: Function) {
+        const { promise, resolve } = Promise.withResolvers<unknown>();
+        const component = browserComponent(factory, resolve, { rows: 60, write: () => {} });
+        const keys = openings[selections.length] ?? ["\u001b"];
+        selections.push(component.render(120).join("\n").split("\n").find((line: string) => line.includes(" > ")) ?? "");
+        if (selections.length === 1) writeStashFixture("reselect newer from another session");
+        for (const key of keys) component.handleInput(key);
+        return promise;
+      },
+      confirm: () => Promise.resolve(true),
+      getEditorText: () => "",
+      notify() {},
+    },
+  } as unknown as ExtensionContext;
+
+  await stashCommand.handler("", context);
+  expect(selections).toHaveLength(5);
+  expect(selections[0]).toContain("reselect echo");
+  // Locked, refused delete of a locked stash, and unlocked: bravo stays selected throughout.
+  for (const selection of selections.slice(1, 4)) expect(selection).toContain("reselect bravo");
+  // Deleted: the same row now holds the next stash.
+  expect(selections[4]).toContain("reselect alpha");
+  expect(readEntries().map((entry) => entry.text)).not.toContain("reselect bravo");
 });
 
 test("expires only old unlocked normal stashes", async () => {
@@ -1511,7 +1595,7 @@ test("expires only old unlocked normal stashes", async () => {
       "Time format": "12-hour clock",
       "Retention days": 1,
     });
-    await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+    await refreshConfig?.({}, CONFIG_CONTEXT);
 
     expect(existsSync(expired)).toBeFalse();
     expect(existsSync(locked)).toBeTrue();
@@ -1524,12 +1608,12 @@ test("expires only old unlocked normal stashes", async () => {
       "Time format": "12-hour clock",
       "Retention days": 0,
     });
-    await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+    await refreshConfig?.({}, CONFIG_CONTEXT);
     expect(existsSync(indefinite)).toBeTrue();
     rmSync(indefinite, { force: true });
   } finally {
     writeSettings({ "Time format": "12-hour clock" });
-    await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+    await refreshConfig?.({}, CONFIG_CONTEXT);
     for (const path of [expired, locked, preserved, recovery, fresh.path]) {
       rmSync(path, { force: true });
     }
@@ -1556,6 +1640,7 @@ test("locks stashes against selected and delete-all actions", async () => {
     const context = {
       cwd: agentDir,
       mode: "tui",
+      agent: MAIN_AGENT,
       sessionManager: TEST_SESSION_MANAGER,
       ui: {
         custom(factory: Function) {
@@ -1599,6 +1684,7 @@ test("locks stashes against selected and delete-all actions", async () => {
   await stashShortcut.handler({
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       getEditorText: () => sentinelEditor,
@@ -1658,6 +1744,7 @@ test("keeps quota-preserved conflict copies visible in the browser", async () =>
   const saveContext = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       getEditorText: () => editorText,
@@ -1679,6 +1766,7 @@ test("keeps quota-preserved conflict copies visible in the browser", async () =>
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       custom(factory: Function) {
@@ -1725,7 +1813,7 @@ test("keeps quota-preserved conflict copies visible in the browser", async () =>
       "Time format": "12-hour clock",
       "Editor command": "",
     });
-    await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+    await refreshConfig?.({}, CONFIG_CONTEXT);
     await stashCommand.handler("", context);
 
     const files = readdirSync(stashDir).filter((file) => file.endsWith(".json"));
@@ -1740,7 +1828,7 @@ test("keeps quota-preserved conflict copies visible in the browser", async () =>
     if (previousEditor === undefined) delete process.env.EDITOR;
     else process.env.EDITOR = previousEditor;
     writeSettings({ "Time format": "12-hour clock" });
-    await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+    await refreshConfig?.({}, CONFIG_CONTEXT);
   }
 });
 
@@ -1768,6 +1856,7 @@ test("keeps preserved crash-recovery temps visible beyond the normal quota", asy
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       custom(factory: Function) {
@@ -1820,6 +1909,7 @@ test("keeps every recoverable temp visible beyond the recovery-window size", asy
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       custom(factory: Function) {
@@ -1852,6 +1942,7 @@ function optionPopupFixture(options: string[], rows = 12) {
   let component: { render(width: number): string[]; handleInput(data: string): void } | undefined;
   const context = {
     mode: "tui",
+    agent: MAIN_AGENT,
     ui: {
       custom(factory: Function) {
         component = factory(
@@ -1970,6 +2061,7 @@ test("honors Show icons while using contextual Nerd glyphs in the stash browser"
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: MAIN_AGENT,
     sessionManager: TEST_SESSION_MANAGER,
     ui: {
       custom(factory: Function) {
@@ -1998,7 +2090,7 @@ test("honors Show icons while using contextual Nerd glyphs in the stash browser"
     }
   } finally {
     writeSettings({ "Time format": "12-hour clock" });
-    await refreshConfig?.({}, { cwd: agentDir } as ExtensionContext);
+    await refreshConfig?.({}, CONFIG_CONTEXT);
   }
 });
 

@@ -46,7 +46,10 @@ async function useLayout(layout: string): Promise<void> {
     JSON.stringify({ settings: { "@hkay-dev/ohmystash": { "Browser layout": layout } } }),
     { mode: 0o600 },
   );
-  await refreshConfig({}, { cwd: agentDir } as ExtensionContext);
+  // session_start reloads the settings only for the main TUI session.
+  await refreshConfig({}, {
+    cwd: agentDir, mode: "tui", agent: { kind: "main" }, ui: { setEditorComponent() {} },
+  } as unknown as ExtensionContext);
 }
 
 async function openBrowser(sessionId: string): Promise<BrowserFactory> {
@@ -55,6 +58,7 @@ async function openBrowser(sessionId: string): Promise<BrowserFactory> {
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: { kind: "main" },
     sessionManager: { getSessionId: () => sessionId },
     ui: {
       custom(next: BrowserFactory) {
@@ -215,6 +219,33 @@ test("reuses the selected preview while search keystrokes keep the same stash se
     }
     Intl.Segmenter.prototype.segment = segment;
     expect(previewBuilds).toBe(0);
+  } finally {
+    Intl.Segmenter.prototype.segment = segment;
+    rmSync(path, { force: true });
+  }
+});
+
+test("wraps a preview with wide text by cells, splitting only its non-ASCII lines into graphemes", async () => {
+  const chat = randomUUID();
+  const wide = "漢字かな交じり ".repeat(30);
+  const ascii = "plain ascii words ".repeat(400);
+  const path = writeStash(`${wide}\n${ascii}\n${ascii}`, chat);
+  const segment = Intl.Segmenter.prototype.segment;
+  const segmented: number[] = [];
+  try {
+    await useLayout("Side by side");
+    const factory = await openBrowser(chat);
+    Intl.Segmenter.prototype.segment = function (this: Intl.Segmenter, input: string) {
+      segmented.push(input.length);
+      return segment.call(this, input);
+    };
+    const lines = browser(factory, 40).render(120);
+    Intl.Segmenter.prototype.segment = segment;
+    // One curly quote or kanji used to send the whole text through the segmenter.
+    expect(segmented.length).toBeGreaterThan(0);
+    expect(Math.max(...segmented)).toBeLessThan(ascii.length);
+    expect(lines.filter((line) => line.includes("漢字")).length).toBeGreaterThan(1);
+    for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(120);
   } finally {
     Intl.Segmenter.prototype.segment = segment;
     rmSync(path, { force: true });

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
+  existsSync,
   fstatSync,
   fsyncSync,
   linkSync,
@@ -14,6 +15,7 @@ import {
   renameSync,
   type Stats,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -28,6 +30,7 @@ import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { getEditorCommand, openInEditor } from "@oh-my-pi/pi-coding-agent/utils/external-editor";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
+  extractPrintableText,
   fuzzyFilter,
   Input,
   Key,
@@ -44,6 +47,7 @@ import {
   hasPrivateStoragePermissions,
   invalidatePrivateStoragePermission,
   preparePrivateStorageDirectory,
+  trustCreatedFile,
   withPrivateStoragePermissions,
 } from "./storage-permissions";
 
@@ -101,6 +105,9 @@ type StashEntry = {
   stashedAt: string;
   origin?: StashOrigin;
   stashedAtMs: number;
+  // The last restore or repeat stash, when there was one. Retention counts from lastUsedMs.
+  usedAt?: string;
+  lastUsedMs: number;
   fileName: string;
   attachments: StoredAttachment[];
   locked: boolean;
@@ -115,9 +122,12 @@ type StashEntry = {
   searchTextAllLower?: string;
 };
 
-type BrowserState = { query: string; scope: BrowserScope };
+// The browser state carried between openings. The selection comes back by id, or at the same
+// row when that stash is gone.
+type BrowserState = { query: string; scope: BrowserScope; selectedId?: string; selectedIndex: number };
 type BrowserAction =
   | ({ type: "restore"; entry: StashEntry } & BrowserState)
+  | ({ type: "pop"; entry: StashEntry } & BrowserState)
   | ({ type: "queue"; entry: StashEntry } & BrowserState)
   | ({ type: "submit-queue"; entry: StashEntry } & BrowserState)
   | ({ type: "toggle-lock"; entry: StashEntry } & BrowserState)
@@ -125,7 +135,9 @@ type BrowserAction =
   | ({ type: "delete"; entry: StashEntry } & BrowserState)
   | ({ type: "delete-all"; entries: StashEntry[] } & BrowserState)
   | null;
-type LoadResult = { entries: StashEntry[]; skipped: number };
+// Stash files a load left out, by reason. Damaged files are renamed so they're reported once.
+type OmittedFiles = { permissions: number; damaged: number; unsupported: number; overLimit: number };
+type LoadResult = { entries: StashEntry[]; omitted: OmittedFiles };
 type PreviewModel =
   | { kind: "ascii"; text: string; width: number; totalRows: number }
   | { kind: "grapheme"; text: string; rowStarts: number[]; rowEnds: number[]; totalRows: number };
@@ -137,6 +149,7 @@ type PersistedEntry = {
   stashedAt: string;
   origin?: StashOrigin;
   stashedAtMs: number;
+  usedAt?: string;
   attachments: StoredAttachment[];
   locked: boolean;
   preserved: boolean;
@@ -149,7 +162,14 @@ const MAX_ENTRY_FILES = 256;
 const MAX_ATTACHMENTS = 64;
 const MAX_ATTACHMENT_BYTES = 64 * 1024 * 1024;
 const MAX_ENTRY_ATTACHMENT_BYTES = 128 * 1024 * 1024;
+// All attachments across chats. Display links share their asset's bytes, so they don't count.
+const MAX_ATTACHMENT_STORE_BYTES = 1024 * 1024 * 1024;
 const ASSET_REF = /^sha256:([a-f0-9]{64})$/;
+// Every asset reference in a stash file's text, which is how garbage collection finds the live ones.
+const ASSET_REF_TEXT = /sha256:([a-f0-9]{64})/g;
+// A canonical asset is named by its SHA-256, and a display link adds an extension.
+const ASSET_FILE = /^([a-f0-9]{64})(\.[a-z0-9][a-z0-9._-]*)?$/;
+const ASSET_TEMP = /^\.[0-9a-f-]{36}\.(?:asset|link)\.tmp$/i;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_SESSION_ID_LENGTH = 128;
 const MAX_SESSION_NAME_LENGTH = 512;
@@ -161,8 +181,12 @@ const STALE_TEMP = /^\.[0-9a-f-]{36}\.tmp$/i;
 const STALE_TEMP_MS = 24 * 60 * 60 * 1000;
 // A temp written this recently may belong to a live writer that has not renamed it yet.
 const ACTIVE_TEMP_MS = 60 * 1000;
+// Torn writes set aside as .orphan stay for inspection this long, then garbage collection deletes them.
+const ORPHAN_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const QUOTA_ERROR =
   "OMS storage quota reached across all chats. Open the stash browser and press g to manage it";
+const ATTACHMENT_QUOTA_ERROR =
+  "OMS attachment storage is full (1 GiB across all chats). Open the stash browser, press g, and delete stashes with images or large pastes";
 const ENTRY_CACHE = new Map<string, CachedEntry>();
 const LOCAL_TIMESTAMP_FORMATTERS = {
   "12-hour": new Intl.DateTimeFormat(undefined, {
@@ -200,11 +224,19 @@ const DEFAULT_CONFIG: PromptStashConfig = {
   retentionDays: 0,
   timeFormat: "12-hour",
 };
+// The main TUI session's settings. Subagents load this module too, so only the main session's
+// session_start writes them.
 let pluginConfig = { ...DEFAULT_CONFIG };
 const ACTIVE_EDITORS = new WeakMap<object, CustomEditor>();
 
 class EntryConflictError extends Error {}
 class StorageQuotaError extends Error {}
+// A stored attachment that's damaged or shared with other accounts. `reason` names it in notices.
+class AttachmentCheckError extends Error {
+  constructor(message: string, readonly reason: string) {
+    super(message);
+  }
+}
 
 function errorCode(cause: unknown): string | undefined {
   return cause instanceof Error && "code" in cause ? String(cause.code) : undefined;
@@ -285,6 +317,38 @@ function syncCreatedDirectoryParents(firstCreated: string, leaf: string): void {
   }
 }
 
+// Quotes a path for a POSIX shell command in a fix-it message.
+function shellPath(path: string): string {
+  return `'${path.replaceAll("'", "'\\''")}'`;
+}
+
+// Names the directory and the fix, each path once so the notice stays short. A store copied with
+// shared permissions, for example by cp -r or a sync tool, would otherwise fail every action
+// without saying where.
+function privateDirectoryError(label: string, dir: string, stat: Stats, cause?: unknown): Error {
+  if (stat.isSymbolicLink()) return new Error(`${label} ${dir} is a symbolic link. Replace it with the real directory`);
+  if (!stat.isDirectory()) {
+    return new Error(`${label} ${dir} is not a directory. Move it aside so OMS can create the directory`);
+  }
+  if (process.platform === "win32") {
+    const detail = cause instanceof Error ? ` (${cause.message})` : "";
+    return new Error(`${label} ${dir} must be private to your account${detail}. Remove other accounts from its Security settings`);
+  }
+  const uid = process.getuid?.();
+  if (uid !== undefined && stat.uid !== uid) {
+    return new Error(`${label} belongs to another account. Run: sudo chown -R "$(id -un)" ${shellPath(dir)}`);
+  }
+  return new Error(`${label} is shared with other accounts. Run: chmod 700 ${shellPath(dir)}`);
+}
+
+// How to make stash or attachment files private again, with their path. `pattern` is a shell glob
+// that extends the path to several files.
+function privateFileFix(path: string, pattern = ""): string {
+  return process.platform === "win32"
+    ? `Remove other accounts from the Security settings of ${path}${pattern.replaceAll("/", "\\")}`
+    : `Run: chmod 600 ${shellPath(path)}${pattern}`;
+}
+
 function checkedStashDir(create: boolean): string {
   const dir = stashDir();
   const created = create ? mkdirSync(dir, { recursive: true, mode: 0o700 }) : undefined;
@@ -295,10 +359,14 @@ function checkedStashDir(create: boolean): string {
     !stat.isDirectory() ||
     (process.platform !== "win32" && !hasPrivateStoragePermissions(dir, stat))
   ) {
-    throw new Error("OMS storage directory must be an owner-only real directory");
+    throw privateDirectoryError("OMS storage directory", dir, stat);
   }
   // Preparation validates native Windows ACLs; POSIX permissions were checked above.
-  preparePrivateStorageDirectory(dir);
+  try {
+    preparePrivateStorageDirectory(dir);
+  } catch (error) {
+    throw privateDirectoryError("OMS storage directory", dir, stat, error);
+  }
   return dir;
 }
 
@@ -313,10 +381,45 @@ function checkedAttachmentDir(create: boolean): string {
     !stat.isDirectory() ||
     (process.platform !== "win32" && !hasPrivateStoragePermissions(dir, stat))
   ) {
-    throw new Error("OMS attachment directory must be an owner-only real directory");
+    throw privateDirectoryError("OMS attachment directory", dir, stat);
   }
-  preparePrivateStorageDirectory(dir);
+  try {
+    preparePrivateStorageDirectory(dir);
+  } catch (error) {
+    throw privateDirectoryError("OMS attachment directory", dir, stat, error);
+  }
   return dir;
+}
+
+// Runs one storage step in one permission scope. On Windows that's one ACL helper launch, because
+// the checks inside reuse the scope's snapshot. `attachments` creates the attachment directory
+// first, so the snapshot covers it.
+function inStore<T>(create: boolean, step: (dir: string) => T, attachments = false): T {
+  const dir = stashDir();
+  if (create) {
+    const created = mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (created !== undefined) syncCreatedDirectoryParents(created, dir);
+  }
+  const stat = lstatSync(dir);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw privateDirectoryError("OMS storage directory", dir, stat);
+  if (create && attachments) {
+    try {
+      mkdirSync(join(dir, "attachments"), { mode: 0o700 });
+      syncDirectory(dir);
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") throw error;
+    }
+  }
+  let started = false;
+  try {
+    return withPrivateStoragePermissions(dir, () => {
+      started = true;
+      return step(checkedStashDir(false));
+    });
+  } catch (error) {
+    if (started) throw error;
+    throw privateDirectoryError("OMS storage directory", dir, stat, error);
+  }
 }
 
 function assetHash(data: Buffer): string {
@@ -330,23 +433,90 @@ function assetPath(ref: string): string {
 
 function readAsset(ref: string, byteLength: number): Buffer {
   if (byteLength < 0 || byteLength > MAX_ATTACHMENT_BYTES) {
-    throw new Error("OMS attachment size is invalid");
+    throw new AttachmentCheckError("OMS attachment size is invalid", "damaged");
   }
   const path = assetPath(ref);
   const stat = lstatSync(path);
-  if (
-    stat.isSymbolicLink() ||
-    !stat.isFile() ||
-    !hasPrivateStoragePermissions(path, stat) ||
-    stat.size !== byteLength
-  ) {
-    throw new Error("OMS attachment is not a private regular file of the expected size");
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.size !== byteLength) {
+    throw new AttachmentCheckError(`OMS attachment ${path} is damaged: it isn't a regular file of the expected size`, "damaged");
+  }
+  if (!hasPrivateStoragePermissions(path, stat)) {
+    throw new AttachmentCheckError(
+      `OMS attachment is shared with other accounts. ${privateFileFix(path)}`,
+      "shared with other accounts",
+    );
   }
   const data = readFileSync(path);
   if (`sha256:${assetHash(data)}` !== ref) {
-    throw new Error("OMS attachment failed its content hash check");
+    throw new AttachmentCheckError(`OMS attachment ${path} is damaged: it failed its content hash check`, "damaged");
   }
   return data;
+}
+
+// A stash is about to reference this asset, so garbage collection treats it as new. Best effort:
+// it only narrows the window in which a collection running elsewhere could see it unreferenced.
+function touchAsset(path: string): void {
+  try {
+    const now = new Date();
+    utimesSync(path, now, now);
+    invalidatePrivateStoragePermission(path);
+  } catch {}
+}
+
+// Makes displayPath another name for finalPath. A display link left from before a repair still names
+// the old bytes, so it's replaced through a temp link and a rename.
+function linkDisplayPath(dir: string, finalPath: string, displayPath: string): void {
+  if (displayPath === finalPath) return;
+  try {
+    linkSync(finalPath, displayPath);
+  } catch (error) {
+    if (errorCode(error) !== "EEXIST") throw error;
+    const canonical = lstatSync(finalPath);
+    const display = lstatSync(displayPath);
+    if (!display.isSymbolicLink() && display.isFile() && display.dev === canonical.dev && display.ino === canonical.ino) {
+      return;
+    }
+    const tempLink = join(dir, `.${randomUUID()}.link.tmp`);
+    linkSync(finalPath, tempLink);
+    try {
+      renameSync(tempLink, displayPath);
+    } finally {
+      try {
+        unlinkSync(tempLink);
+      } catch {}
+    }
+  }
+  invalidatePrivateStoragePermission(finalPath);
+  syncDirectory(dir);
+}
+
+// Canonical asset bytes; display links are more names for the same bytes.
+function attachmentUsage(attachmentDir: string): number {
+  let bytes = 0;
+  const handle = opendirSync(attachmentDir);
+  try {
+    for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+      const asset = ASSET_FILE.exec(entry.name);
+      if (!asset || asset[2] !== undefined) continue;
+      try {
+        const stat = lstatSync(join(attachmentDir, basename(entry.name)));
+        if (stat.isFile()) bytes += stat.size;
+      } catch {}
+    }
+  } finally {
+    handle.closeSync();
+  }
+  return bytes;
+}
+
+// New attachment bytes must fit the attachment quota. Unreferenced leftovers are collected before
+// giving up, so they never block a save.
+function reserveAttachmentSpace(attachmentDir: string, bytes: number): void {
+  if (attachmentUsage(attachmentDir) + bytes <= MAX_ATTACHMENT_STORE_BYTES) return;
+  collectAttachmentGarbage(dirname(attachmentDir));
+  if (attachmentUsage(attachmentDir) + bytes > MAX_ATTACHMENT_STORE_BYTES) {
+    throw new StorageQuotaError(ATTACHMENT_QUOTA_ERROR);
+  }
 }
 
 function persistAsset(data: Buffer, extension?: string): string {
@@ -358,22 +528,20 @@ function persistAsset(data: Buffer, extension?: string): string {
   const ref = `sha256:${hash}`;
   const finalPath = join(dir, hash);
   const displayPath = extension ? `${finalPath}.${extension}` : finalPath;
+  // A stored copy that fails its checks gets replaced with these good bytes, instead of failing
+  // every later stash of the same image.
+  let damaged = false;
   try {
     const existing = readAsset(ref, data.byteLength);
     if (!existing.equals(data)) throw new Error("OMS attachment hash collision");
-    if (displayPath !== finalPath) {
-      try {
-        linkSync(finalPath, displayPath);
-        invalidatePrivateStoragePermission(finalPath);
-        syncDirectory(dir);
-      } catch (error) {
-        if (errorCode(error) !== "EEXIST") throw error;
-      }
-    }
+    touchAsset(finalPath);
+    linkDisplayPath(dir, finalPath, displayPath);
     return ref;
   } catch (error) {
-    if (errorCode(error) !== "ENOENT") throw error;
+    if (error instanceof AttachmentCheckError) damaged = true;
+    else if (errorCode(error) !== "ENOENT") throw error;
   }
+  if (!damaged) reserveAttachmentSpace(dir, data.byteLength);
   const tempPath = join(dir, `.${randomUUID()}.asset.tmp`);
   let fd: number | undefined;
   let ownsTemp = false;
@@ -384,22 +552,22 @@ function persistAsset(data: Buffer, extension?: string): string {
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    try {
-      linkSync(tempPath, finalPath);
-    } catch (error) {
-      if (errorCode(error) !== "EEXIST") throw error;
-      const existing = readAsset(ref, data.byteLength);
-      if (!existing.equals(data)) throw new Error("OMS attachment hash collision");
-    }
-    unlinkSync(tempPath);
-    if (displayPath !== finalPath) {
+    if (damaged) {
+      renameSync(tempPath, finalPath);
+      ownsTemp = false;
+      trustCreatedFile(finalPath);
+    } else {
       try {
-        linkSync(finalPath, displayPath);
-        invalidatePrivateStoragePermission(finalPath);
+        linkSync(tempPath, finalPath);
       } catch (error) {
         if (errorCode(error) !== "EEXIST") throw error;
+        const existing = readAsset(ref, data.byteLength);
+        if (!existing.equals(data)) throw new Error("OMS attachment hash collision");
       }
+      unlinkSync(tempPath);
+      ownsTemp = false;
     }
+    linkDisplayPath(dir, finalPath, displayPath);
     syncDirectory(dir);
     return ref;
   } catch (error) {
@@ -613,6 +781,11 @@ function parsePersistedEntry(text: string): PersistedEntry | undefined {
     if (!Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString() !== parsed.stashedAt) {
       return undefined;
     }
+    // Versions before 1.12 never wrote usedAt. A malformed one only loses the retention extension.
+    const usedDate = typeof parsed.usedAt === "string" ? new Date(parsed.usedAt) : undefined;
+    const usedAt = usedDate && Number.isFinite(usedDate.getTime()) && usedDate.toISOString() === parsed.usedAt
+      ? parsed.usedAt
+      : undefined;
     return {
       id: parsed.id,
       text: parsed.text,
@@ -620,6 +793,7 @@ function parsePersistedEntry(text: string): PersistedEntry | undefined {
       stashedAt: parsed.stashedAt,
       origin: origin ?? undefined,
       stashedAtMs: parsedDate.getTime(),
+      ...(usedAt === undefined ? {} : { usedAt }),
       attachments,
       locked,
       preserved,
@@ -727,22 +901,40 @@ function storageUsage(dir: string, replacedName?: string) {
 }
 
 function loadEntries(): LoadResult {
-  let dir: string;
   try {
-    dir = checkedStashDir(false);
+    return inStore(false, (dir) => loadEntriesInDirectory(dir));
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return { entries: [], skipped: 0 };
-    throw error;
+    if (errorCode(error) !== "ENOENT") throw error;
+    return { entries: [], omitted: { permissions: 0, damaged: 0, unsupported: 0, overLimit: 0 } };
   }
-  return withPrivateStoragePermissions(dir, () => loadEntriesInDirectory(dir));
+}
+
+// Renames a stash file that can never load, once, so it stops warning and counting against the quota.
+function setAsideDamaged(path: string, inspected: Stats): void {
+  try {
+    const current = lstatSync(path);
+    if (current.dev !== inspected.dev || current.ino !== inspected.ino) return;
+    renameSync(path, `${path}.invalid`);
+    syncDirectory(dirname(path));
+  } catch {}
+}
+
+// Bytes no OhMyStash version could load, unlike an entry this version rejects, which might come from
+// a newer version and is left alone.
+function isDamagedStashText(text: string): boolean {
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value !== "object" || value === null || Array.isArray(value);
+  } catch {
+    return true;
+  }
 }
 
 function loadEntriesInDirectory(dir: string): LoadResult {
-
   const selection = newestCandidateNames(dir);
   const names = selection.names;
   const entries: StashEntry[] = [];
-  let skipped = selection.skipped;
+  const omitted: OmittedFiles = { permissions: 0, damaged: 0, unsupported: 0, overLimit: selection.skipped };
   let totalBytes = 0;
   const seenEntries = selection.tempCount > 0 ? new Map<string, StashEntry>() : undefined;
   let recovered = false;
@@ -770,17 +962,29 @@ function loadEntriesInDirectory(dir: string): LoadResult {
       // cleanupStaleTemps would after a day, keeps it from blocking changes to its stash.
       if (abandoned && stat.isFile() && hasPrivateStoragePermissions(path, stat) && !isRecoverableTemp(path)) {
         releaseTemp(path, stat, true);
-        skipped += 1;
+        omitted.damaged += 1;
         continue;
       }
-      if (
-        !stat.isFile() ||
-        !hasPrivateStoragePermissions(path, stat) ||
-        stat.size <= 0 ||
-        stat.size > MAX_ENTRY_FILE_BYTES ||
-        (!overflowProtected && totalBytes + stat.size > MAX_TOTAL_BYTES)
-      ) {
-        skipped += 1;
+      if (!stat.isFile()) {
+        omitted.unsupported += 1;
+        continue;
+      }
+      if (!hasPrivateStoragePermissions(path, stat)) {
+        omitted.permissions += 1;
+        continue;
+      }
+      // OhMyStash never publishes an empty stash file or one over the per-file limit.
+      if (stat.size <= 0 || stat.size > MAX_ENTRY_FILE_BYTES) {
+        if (recoveryFile) {
+          omitted.unsupported += 1;
+        } else {
+          setAsideDamaged(path, stat);
+          omitted.damaged += 1;
+        }
+        continue;
+      }
+      if (!overflowProtected && totalBytes + stat.size > MAX_TOTAL_BYTES) {
+        omitted.overLimit += 1;
         continue;
       }
       if (!overflowProtected) totalBytes += stat.size;
@@ -798,16 +1002,22 @@ function loadEntriesInDirectory(dir: string): LoadResult {
       const bytes = Buffer.allocUnsafe(stat.size + 1);
       const bytesRead = readSync(fd, bytes, 0, bytes.length, 0);
       if (bytesRead !== stat.size) {
-        skipped += 1;
+        omitted.unsupported += 1;
         continue;
       }
-      const persisted = parsePersistedEntry(bytes.toString("utf8", 0, bytesRead));
+      const text = bytes.toString("utf8", 0, bytesRead);
+      const persisted = parsePersistedEntry(text);
       if (
         persisted === undefined ||
-        (STALE_TEMP.test(fileName) && fileName !== `.${persisted.id}.tmp`) ||
+        (recoveryFile && fileName !== `.${persisted.id}.tmp`) ||
         (preservedFile && !persisted.preserved)
       ) {
-        skipped += 1;
+        if (!recoveryFile && persisted === undefined && isDamagedStashText(text)) {
+          setAsideDamaged(path, stat);
+          omitted.damaged += 1;
+        } else {
+          omitted.unsupported += 1;
+        }
         continue;
       }
       const revision = assetHash(bytes.subarray(0, bytesRead));
@@ -842,6 +1052,11 @@ function loadEntriesInDirectory(dir: string): LoadResult {
         stashedAt: persisted.stashedAt,
         origin: persisted.origin,
         stashedAtMs: persisted.stashedAtMs,
+        ...(persisted.usedAt === undefined ? {} : { usedAt: persisted.usedAt }),
+        lastUsedMs: Math.max(
+          persisted.stashedAtMs,
+          persisted.usedAt === undefined ? 0 : Date.parse(persisted.usedAt),
+        ),
         fileName,
         revision,
         attachments: persisted.attachments,
@@ -857,13 +1072,21 @@ function loadEntriesInDirectory(dir: string): LoadResult {
       entries.push(entry);
       seenEntries?.set(entry.id, entry);
       if (!recoveryFile) ENTRY_CACHE.set(fileName, { fingerprint, entry });
-    } catch {
-      skipped += 1;
+    } catch (error) {
+      // A file deleted since the directory was listed is simply gone.
+      const code = errorCode(error);
+      if (code === "EACCES" || code === "EPERM") omitted.permissions += 1;
+      else if (code !== "ENOENT") omitted.unsupported += 1;
     } finally {
       if (fd !== undefined) closeSync(fd);
     }
   }
-  if (recovered) return withPrivateStoragePermissions(dir, () => loadEntriesInDirectory(dir));
+  if (recovered) {
+    // The second pass no longer sees the files this one set aside, so it carries their count.
+    const reloaded = withPrivateStoragePermissions(dir, () => loadEntriesInDirectory(dir));
+    reloaded.omitted.damaged += omitted.damaged;
+    return reloaded;
+  }
 
   const candidateNames = new Set(names);
   for (const cachedName of ENTRY_CACHE.keys()) {
@@ -871,7 +1094,7 @@ function loadEntriesInDirectory(dir: string): LoadResult {
   }
 
   entries.sort((a, b) => b.stashedAt.localeCompare(a.stashedAt));
-  return { entries: pruneExpiredEntries(entries), skipped };
+  return { entries: pruneExpiredEntries(entries), omitted };
 }
 
 function saveEntry(
@@ -918,15 +1141,20 @@ function saveEntry(
       throw new StorageQuotaError(QUOTA_ERROR);
     }
     checkedStashDir(false);
+    // The published file is this save's own temp, so later checks in this scope can trust it.
     if (identity) {
+      let linked = true;
       try {
         linkSync(tempPath, finalPath);
       } catch (error) {
         if (errorCode(error) !== "EEXIST") throw error;
+        linked = false;
       }
       unlinkSync(tempPath);
+      if (linked) trustCreatedFile(finalPath);
     } else {
       renameSync(tempPath, finalPath);
+      trustCreatedFile(finalPath);
     }
     ownsTemp = false;
     syncDirectory(dir);
@@ -1018,6 +1246,7 @@ function replaceEntry(
   text: string,
   attachments: StoredAttachment[],
   locked: boolean,
+  usedAt = entry.usedAt,
 ): void {
   const dir = checkedStashDir(false);
   const publishedName = STALE_TEMP.test(entry.fileName)
@@ -1032,6 +1261,7 @@ function replaceEntry(
     text,
     inputMode: entry.inputMode,
     stashedAt: entry.stashedAt,
+    ...(usedAt === undefined ? {} : { usedAt }),
     origin: entry.origin,
     attachments,
     locked,
@@ -1072,6 +1302,7 @@ function replaceEntry(
     fd = undefined;
     renameSync(tempPath, finalPath);
     ownsTemp = false;
+    trustCreatedFile(finalPath);
     syncDirectory(dir);
     ENTRY_CACHE.delete(entry.fileName);
     ENTRY_CACHE.delete(publishedName);
@@ -1089,6 +1320,15 @@ function replaceEntry(
 
 function setEntryLocked(entry: StashEntry, locked: boolean): void {
   replaceEntry(entry, entry.text, entry.attachments, locked);
+}
+
+// Retention counts from the last restore, so a stash you keep reusing doesn't expire. This is best
+// effort: a failure must not undo or fail a restore that already happened.
+function markEntryUsed(entry: StashEntry): void {
+  if (entry.locked || entry.preserved || STALE_TEMP.test(entry.fileName)) return;
+  try {
+    replaceEntry(entry, entry.text, entry.attachments, entry.locked, new Date().toISOString());
+  } catch {}
 }
 
 function setEntryText(entry: StashEntry, editedText: string): "updated" | "conflict-copy" | "quota-copy" {
@@ -1161,12 +1401,11 @@ function removeEntry(entry: StashEntry, sync = true): boolean {
   const fd = openReplacementTemp(tempPath);
   try {
     const stat = lstatSync(path);
-    if (
-      stat.isSymbolicLink() ||
-      !stat.isFile() ||
-      !hasPrivateStoragePermissions(path, stat)
-    ) {
-      throw new Error("Selected OMS entry is not a private regular file");
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new Error(`OMS stash file ${path} isn't a regular file`);
+    }
+    if (!hasPrivateStoragePermissions(path, stat)) {
+      throw new Error(`OMS stash file is shared with other accounts. ${privateFileFix(path)}`);
     }
     const bytes = readFileSync(path);
     const persisted = parsePersistedEntry(bytes.toString("utf8"));
@@ -1203,8 +1442,74 @@ function removeEntries(entries: StashEntry[]): number {
       }
     }
     syncDirectory(dir);
+    collectAttachmentGarbage(dir);
     return deleted;
   });
+}
+
+// Deletes assets and display links that no stash file names any more, once they're older than a
+// live save's window, plus stale asset temps and old .orphan files. Every stash, conflict copy,
+// recovery temp, and set-aside file counts, read as text so a damaged one still keeps its
+// assets. If one can't be read, nothing is deleted.
+function collectAttachmentGarbage(dir: string): void {
+  const attachmentDir = join(dir, "attachments");
+  try {
+    const stat = lstatSync(attachmentDir);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return;
+  } catch {
+    return;
+  }
+  // Saving touches a reused asset and writes new ones, so mtime marks an asset's last use.
+  const now = Date.now();
+  const referenced = new Set<string>();
+  let removedOrphan = false;
+  const handle = opendirSync(dir);
+  try {
+    for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+      const name = entry.name;
+      const orphan = name.endsWith(".orphan");
+      if (!orphan && !name.endsWith(".json") && !name.endsWith(".tmp") && !name.endsWith(".invalid")) continue;
+      const path = join(dir, basename(name));
+      let text: string;
+      try {
+        const stat = lstatSync(path);
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
+        if (orphan && now - stat.mtimeMs >= ORPHAN_KEEP_MS) {
+          unlinkSync(path);
+          removedOrphan = true;
+          continue;
+        }
+        // OhMyStash never writes a stash file over the per-file limit, so a larger one names nothing.
+        if (stat.size > MAX_ENTRY_FILE_BYTES) continue;
+        text = readFileSync(path, "latin1");
+      } catch (error) {
+        if (errorCode(error) === "ENOENT") continue;
+        return;
+      }
+      for (const match of text.matchAll(ASSET_REF_TEXT)) referenced.add(match[1] as string);
+    }
+  } finally {
+    handle.closeSync();
+  }
+  if (removedOrphan) syncDirectory(dir);
+  let removed = false;
+  const assets = opendirSync(attachmentDir);
+  try {
+    for (let entry = assets.readSync(); entry !== null; entry = assets.readSync()) {
+      const asset = ASSET_FILE.exec(entry.name);
+      if (asset ? referenced.has(asset[1] as string) : !ASSET_TEMP.test(entry.name)) continue;
+      const path = join(attachmentDir, basename(entry.name));
+      try {
+        const stat = lstatSync(path);
+        if (stat.isDirectory() || now - stat.mtimeMs < (asset ? ACTIVE_TEMP_MS : STALE_TEMP_MS)) continue;
+        unlinkSync(path);
+        removed = true;
+      } catch {}
+    }
+  } finally {
+    assets.closeSync();
+  }
+  if (removed) syncDirectory(attachmentDir);
 }
 
 function pruneExpiredEntries(entries: StashEntry[]): StashEntry[] {
@@ -1216,7 +1521,7 @@ function pruneExpiredEntries(entries: StashEntry[]): StashEntry[] {
       entry.locked ||
       entry.preserved ||
       STALE_TEMP.test(entry.fileName) ||
-      entry.stashedAtMs >= cutoff
+      entry.lastUsedMs >= cutoff
     ) {
       continue;
     }
@@ -1229,7 +1534,9 @@ function pruneExpiredEntries(entries: StashEntry[]): StashEntry[] {
     }
   }
   if (!removedNames) return entries;
-  syncDirectory(checkedStashDir(false));
+  const dir = checkedStashDir(false);
+  syncDirectory(dir);
+  collectAttachmentGarbage(dir);
   return entries.filter((entry) => !removedNames.has(entry.fileName));
 }
 
@@ -1317,11 +1624,17 @@ function promptLineCount(text: string): number {
   return count;
 }
 
+// The first character past printable ASCII. displayText already turned tabs into spaces and control
+// characters into U+FFFD, so the newline is the only other ASCII character left.
+const NON_ASCII = /[^\x20-\x7e\n]/g;
+
 function buildPreviewModel(text: string, width: number): PreviewModel {
   const safe = displayText(text);
   const safeWidth = Math.max(1, width);
+  NON_ASCII.lastIndex = 0;
+  let wide = NON_ASCII.exec(safe)?.index ?? -1;
 
-  if (/^[\x20-\x7e\n]*$/.test(safe)) {
+  if (wide === -1) {
     let totalRows = 0;
     let lineStart = 0;
     for (let index = 0; index <= safe.length; index += 1) {
@@ -1332,25 +1645,46 @@ function buildPreviewModel(text: string, width: number): PreviewModel {
     return { kind: "ascii", text: safe, width: safeWidth, totalRows };
   }
 
-  const rowStarts = [0];
+  // Printable ASCII lines still wrap by character count. Only a line with other characters is split
+  // into graphemes and measured, so one curly quote doesn't slow down the whole preview.
+  const rowStarts: number[] = [];
   const rowEnds: number[] = [];
-  let rowWidth = 0;
-  for (const part of GRAPHEME_SEGMENTER.segment(safe)) {
-    if (part.segment === "\n") {
-      rowEnds.push(part.index);
-      rowStarts.push(part.index + 1);
-      rowWidth = 0;
-      continue;
+  let lineStart = 0;
+  while (true) {
+    const newline = safe.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? safe.length : newline;
+    if (wide !== -1 && wide < lineStart) {
+      NON_ASCII.lastIndex = lineStart;
+      wide = NON_ASCII.exec(safe)?.index ?? -1;
     }
-    const graphemeWidth = visibleWidth(part.segment);
-    if (rowWidth > 0 && rowWidth + graphemeWidth > safeWidth) {
-      rowEnds.push(part.index);
-      rowStarts.push(part.index);
-      rowWidth = 0;
+    if (wide === -1 || wide >= lineEnd) {
+      if (lineEnd === lineStart) {
+        rowStarts.push(lineStart);
+        rowEnds.push(lineStart);
+      }
+      for (let start = lineStart; start < lineEnd; start += safeWidth) {
+        rowStarts.push(start);
+        rowEnds.push(Math.min(lineEnd, start + safeWidth));
+      }
+    } else {
+      let rowStart = lineStart;
+      let rowWidth = 0;
+      for (const part of GRAPHEME_SEGMENTER.segment(safe.slice(lineStart, lineEnd))) {
+        const graphemeWidth = visibleWidth(part.segment);
+        if (rowWidth > 0 && rowWidth + graphemeWidth > safeWidth) {
+          rowStarts.push(rowStart);
+          rowEnds.push(lineStart + part.index);
+          rowStart = lineStart + part.index;
+          rowWidth = 0;
+        }
+        rowWidth += graphemeWidth;
+      }
+      rowStarts.push(rowStart);
+      rowEnds.push(lineEnd);
     }
-    rowWidth += graphemeWidth;
+    if (newline === -1) break;
+    lineStart = newline + 1;
   }
-  rowEnds.push(safe.length);
   return { kind: "grapheme", text: safe, rowStarts, rowEnds, totalRows: rowStarts.length };
 }
 
@@ -1452,14 +1786,18 @@ function blobExtensionForImageMimeType(mimeType: string | undefined): string | u
   return normalizeBlobExtension(subtype);
 }
 
-function captureDraft(ctx: ExtensionContext): CapturedDraft {
+type ComposerDraft = { draft: EditorDraft; images: ImageContent[] };
+
+// Reads the composer without touching storage: the draft, with image markers numbered densely, and
+// the images those markers still reference.
+function readComposerDraft(ctx: ExtensionContext): ComposerDraft {
   const editor = activeEditor(ctx);
   if (!editor) {
     const draft = parseEditorDraft(ctx.ui.getEditorText());
     if (ATTACHMENT_TOKEN.test(draft.text) || COLLAPSED_PASTE_TOKEN.test(draft.text)) {
       throw new Error("Restart OMP once so OhMyStash can attach to the native editor");
     }
-    return { ...draft, attachments: [] };
+    return { draft, images: [] };
   }
   // Deleted chips leave their images in pendingImages. Like OMP's submit, keep only images the
   // text still references and renumber their markers densely.
@@ -1467,7 +1805,7 @@ function captureDraft(ctx: ExtensionContext): CapturedDraft {
   const keep = [...new Set(Array.from(expanded.matchAll(VISION_MARKER), (match) => Number(match[2])))]
     .filter((n) => n <= editor.pendingImages.length)
     .sort((a, b) => a - b);
-  const expandedDraft = parseEditorDraft(
+  const draft = parseEditorDraft(
     expanded.replace(VISION_MARKER, (marker, kind: string, n: string, tail: string, ref: string | undefined) => {
       const index = keep.indexOf(Number(n)) + 1;
       if (index === 0) return marker;
@@ -1478,16 +1816,14 @@ function captureDraft(ctx: ExtensionContext): CapturedDraft {
   if (images.length > MAX_ATTACHMENTS) {
     throw new Error(`An OMS entry can contain at most ${MAX_ATTACHMENTS} attachments`);
   }
-  if (images.length === 0 && Buffer.byteLength(expandedDraft.text, "utf8") <= MAX_PROMPT_BYTES) {
-    return { ...expandedDraft, attachments: [] };
-  }
-  checkedAttachmentDir(true);
-  return withPrivateStoragePermissions(stashDir(), () => persistDraftAttachments(expandedDraft, images));
+  return { draft, images };
 }
 
-function persistDraftAttachments(expandedDraft: EditorDraft, images: ImageContent[]): CapturedDraft {
+function persistDraftAttachments({ draft: expandedDraft, images }: ComposerDraft): CapturedDraft {
   let attachmentBytes = 0;
   const attachments: StoredAttachment[] = [];
+  // A draft can repeat one image many times; its bytes are checked and stored once.
+  const stored = new Map<string, string>();
   for (const image of images) {
     const data = Buffer.from(image.data, "base64");
     attachmentBytes += data.byteLength;
@@ -1495,7 +1831,12 @@ function persistDraftAttachments(expandedDraft: EditorDraft, images: ImageConten
       throw new Error("OMS attachments exceed the 128 MiB per-entry limit");
     }
     const extension = blobExtensionForImageMimeType(image.mimeType);
-    const ref = persistAsset(data, extension);
+    const key = `${extension ?? ""}:${image.data}`;
+    let ref = stored.get(key);
+    if (ref === undefined) {
+      ref = persistAsset(data, extension);
+      stored.set(key, ref);
+    }
     attachments.push({
       kind: "image",
       ref,
@@ -1530,85 +1871,156 @@ function persistDraftAttachments(expandedDraft: EditorDraft, images: ImageConten
   };
 }
 
-function resolveEntryAttachments(entry: StashEntry) {
-  if (entry.attachments.length === 0) return { body: undefined, images: [], imageLinks: [] };
-  const root = checkedStashDir(false);
-  return withPrivateStoragePermissions(root, () => resolveStoredAttachments(entry));
-}
+type AttachmentFailure = { label: string; reason: string };
+type ResolvedAttachments = {
+  body?: string;
+  images: ImageContent[];
+  imageLinks: string[];
+  // The 1-based numbers, among the stash's images, of the images that loaded.
+  imageNumbers: number[];
+  imageCount: number;
+  failures: AttachmentFailure[];
+};
 
-function resolveStoredAttachments(entry: StashEntry) {
+// Reads every attachment it can. One that fails its checks is reported instead of failing the
+// whole restore.
+function resolveStoredAttachments(entry: StashEntry): ResolvedAttachments {
   let body: string | undefined;
   const images: ImageContent[] = [];
   const imageLinks: string[] = [];
+  const imageNumbers: number[] = [];
+  const failures: AttachmentFailure[] = [];
+  let imageCount = 0;
   for (const attachment of entry.attachments) {
-    const data = readAsset(attachment.ref, attachment.byteLength);
+    if (attachment.kind === "image") imageCount += 1;
+    let data: Buffer;
+    try {
+      data = readAsset(attachment.ref, attachment.byteLength);
+    } catch (error) {
+      failures.push({
+        label: attachment.kind === "image" ? `Image #${imageCount}` : "the large pasted text",
+        reason: error instanceof AttachmentCheckError
+          ? error.reason
+          : errorCode(error) === "ENOENT" ? "missing" : error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
     if (attachment.kind === "image") {
       images.push({
         type: "image", data: data.toString("base64"), mimeType: attachment.mimeType,
         ...(attachment.detail === undefined ? {} : { detail: attachment.detail }),
       });
       imageLinks.push(pathToFileURL(attachmentDisplayPath(attachment)).href);
+      imageNumbers.push(imageCount);
     } else {
       if (body !== undefined) throw new Error("OMS entry contains multiple large text bodies");
       body = data.toString("utf8");
     }
   }
-  return { body, images, imageLinks };
+  return { body, images, imageLinks, imageNumbers, imageCount, failures };
 }
 
-function setEditorDraft(ctx: ExtensionContext, entry: StashEntry, forceQueue = false): void {
-  const prefix = forceQueue || entry.inputMode === "queue" ? "/queue " : "";
+// Renumbers the image markers to the images that loaded. The marker of an image that couldn't be
+// read becomes plain text, so it can't pick up another image.
+function renumberImageMarkers(text: string, imageNumbers: number[], imageCount: number): string {
+  if (imageNumbers.length === imageCount) return text;
+  return text.replace(VISION_MARKER, (marker, kind: string, n: string, tail: string, ref: string | undefined) => {
+    const number = Number(n);
+    if (number > imageCount) return marker;
+    const index = imageNumbers.indexOf(number) + 1;
+    if (index === 0) return `[${kind} #${number} unavailable]`;
+    return `[${kind} #${index}${tail}]${ref === undefined ? "" : ` attachment://${index}`}`;
+  });
+}
+
+// Names the attachments a restore left out, grouped by why.
+function describeFailures(failures: AttachmentFailure[]): string {
+  const byReason = new Map<string, string[]>();
+  for (const { label, reason } of failures) byReason.set(reason, [...(byReason.get(reason) ?? []), label]);
+  return [...byReason].map(([reason, labels]) => `${labels.join(", ")} (${reason})`).join("; ");
+}
+
+// Puts a stash into the composer and returns the attachments that couldn't be read; the rest of the
+// draft comes back without them. With `links` off, OMP makes the image links itself, for a stash
+// that's about to be deleted.
+function restoreIntoComposer(
+  ctx: ExtensionContext,
+  entry: StashEntry,
+  options: { forceQueue?: boolean; links?: boolean } = {},
+): AttachmentFailure[] {
+  const prefix = options.forceQueue || entry.inputMode === "queue" ? "/queue " : "";
   const editor = activeEditor(ctx);
   if (!editor) {
     if (entry.attachments.length > 0) {
       throw new Error("Restart OMP once so OhMyStash can restore native attachments");
     }
     ctx.ui.setEditorText(`${prefix}${entry.text}`);
-    return;
+    return [];
   }
-  const resolved = resolveEntryAttachments(entry);
-  const text = resolved.body ?? entry.text;
+  const resolved = entry.attachments.length === 0 ? undefined : inStore(false, () => resolveStoredAttachments(entry));
+  const images = resolved?.images ?? [];
+  const text = resolved
+    ? renumberImageMarkers(resolved.body ?? entry.text, resolved.imageNumbers, resolved.imageCount)
+    : entry.text;
+  const links = options.links === false ? undefined : resolved?.imageLinks ?? [];
   if (text.length > 1_000 || text.includes("\n")) {
-    editor.setDraft(prefix, resolved.images);
-    editor.pendingImageLinks = resolved.imageLinks;
-    editor.imageLinks = resolved.imageLinks;
+    editor.setDraft(prefix, images);
+    if (links) {
+      editor.pendingImageLinks = links;
+      editor.imageLinks = links;
+    }
     // Restore saved content synchronously; terminal paste can open an async menu.
     editor.insertPaste(text);
   } else {
-    editor.setDraft(`${prefix}${text}`, resolved.images);
-    editor.pendingImageLinks = resolved.imageLinks;
-    editor.imageLinks = resolved.imageLinks;
+    editor.setDraft(`${prefix}${text}`, images);
+    if (links) {
+      editor.pendingImageLinks = links;
+      editor.imageLinks = links;
+    }
   }
   editor.tui?.requestRender();
+  return resolved?.failures ?? [];
 }
 
-function submitQueuedEntry(ctx: ExtensionContext, entry: StashEntry): void {
+// Submits a stash as a /queue message. If an attachment couldn't be read, it stops at the draft
+// instead, so a partial prompt never goes out unseen.
+function submitQueuedEntry(ctx: ExtensionContext, entry: StashEntry): "submitted" | "drafted" | "blocked" {
   const editor = activeEditor(ctx);
   if (!editor) {
     throw new Error("Restart OMP once so OhMyStash can submit queued stashes");
   }
   if (hasEditorContent(ctx)) {
     ctx.ui.notify("Stash or clear the current editor before submitting a queued stash", "warning");
-    return;
+    return "blocked";
   }
-  setEditorDraft(ctx, entry, true);
+  const failures = restoreIntoComposer(ctx, entry, { forceQueue: true });
+  markEntryUsed(entry);
+  if (failures.length > 0) {
+    ctx.ui.notify(
+      `Inserted the queued draft without submitting it, because it's missing ${describeFailures(failures)}. The stash file is unchanged`,
+      "warning",
+    );
+    return "drafted";
+  }
   // Enter follows user keybindings and may insert a newline instead of submitting.
   editor.submit();
+  return "submitted";
 }
-
 
 function editableEntryText(entry: StashEntry): string {
   const body = entry.attachments.find(
     (attachment): attachment is StoredTextAttachment => attachment.kind === "body",
   );
-  return body ? readAsset(body.ref, body.byteLength).toString("utf8") : entry.text;
+  return body ? inStore(false, () => readAsset(body.ref, body.byteLength).toString("utf8")) : entry.text;
 }
 
-async function editEntry(
+// Opens a stash in the configured editor and returns the edited text. Saving it is a separate
+// storage step.
+async function editEntryText(
   ctx: ExtensionContext,
   entry: StashEntry,
   tui: TUI,
-): Promise<"updated" | "conflict-copy" | "quota-copy" | "unchanged" | "cancelled"> {
+): Promise<{ text: string } | "unchanged" | "cancelled"> {
   const original = editableEntryText(entry);
   const editorCommand = pluginConfig.editorCommand || getEditorCommand();
   let edited: string | null | undefined;
@@ -1635,7 +2047,7 @@ async function editEntry(
   }
   if (edited === null || edited === undefined) return "cancelled";
   if (edited === original) return "unchanged";
-  return setEntryText(entry, edited);
+  return { text: edited };
 }
 
 function clearEditorAfterStash(ctx: ExtensionContext, inputMode: InputMode): void {
@@ -1686,25 +2098,28 @@ function filterStashEntries(
 function showBrowser(
   ctx: ExtensionContext,
   entries: StashEntry[],
-  initialQuery = "",
-  initialScope: BrowserScope = "current",
+  initial: BrowserState,
 ): Promise<BrowserAction> {
   return ctx.ui.custom<BrowserAction>(
     (tui, theme, _keybindings, done) => {
       const searchInput = new Input();
       searchInput.prompt = "/";
-      searchInput.setValue(initialQuery);
+      searchInput.setValue(initial.query);
       const currentSessionId = ctx.sessionManager.getSessionId();
       const currentEntries = entries.filter((entry) => isCurrentChat(entry, currentSessionId));
-      let scope = initialScope;
+      let scope = initial.scope;
       let scopedEntries = scope === "current" ? currentEntries : entries;
       let searching = false;
       let filteredEntries = filterStashEntries(
         scopedEntries,
-        initialQuery,
+        initial.query,
         scope === "all",
       );
-      let selected = 0;
+      // Reopening after an action selects the same stash, or the row it was on when it's gone.
+      const reselected = filteredEntries.findIndex((entry) => entry.id === initial.selectedId);
+      let selected = reselected !== -1
+        ? reselected
+        : Math.max(0, Math.min(initial.selectedIndex, filteredEntries.length - 1));
       let previewOffset = 0;
       let previewRows = 1;
       let previewCache: { entry: StashEntry; width: number; model: PreviewModel } | undefined;
@@ -1750,8 +2165,13 @@ function showBrowser(
           tui.requestRender();
         }
       };
-      const browserState = (): BrowserState => ({ query: searchInput.getValue(), scope });
-      const finishSelected = (type: "restore" | "queue" | "submit-queue") => {
+      const browserState = (): BrowserState => ({
+        query: searchInput.getValue(),
+        scope,
+        selectedId: selectedEntry()?.id,
+        selectedIndex: selected,
+      });
+      const finishSelected = (type: "restore" | "pop" | "queue" | "submit-queue") => {
         const entry = selectedEntry();
         if (entry) done({ type, entry, ...browserState() });
       };
@@ -1783,15 +2203,13 @@ function showBrowser(
             done(null);
             return;
           }
+          // While searching, every printable key, q and Q included, types into the search. The
+          // letter actions work after Tab.
           if (searching) {
             if (matchesKey(data, Key.escape)) {
               exitSearch(true);
             } else if (matchesKey(data, Key.enter)) {
               finishSelected("restore");
-            } else if (data === "q") {
-              finishSelected("queue");
-            } else if (data === "Q") {
-              finishSelected("submit-queue");
             } else if (matchesKey(data, Key.tab)) {
               exitSearch(false);
             } else if (matchesKey(data, Key.up)) {
@@ -1806,11 +2224,13 @@ function showBrowser(
             }
             return;
           }
-          if (data === "/") {
+          // Kitty's CSI-u forms of letter keys mean the same as the plain characters.
+          const key = extractPrintableText(data);
+          if (key === "/") {
             searching = true;
             searchInput.focused = true;
             tui.requestRender();
-          } else if (data === "g") {
+          } else if (key === "g") {
             toggleScope();
           } else if (matchesKey(data, Key.escape)) {
             if (searchInput.getValue()) exitSearch(true);
@@ -1823,25 +2243,27 @@ function showBrowser(
             moveSelection(-filteredEntries.length);
           } else if (matchesKey(data, Key.end)) {
             moveSelection(filteredEntries.length);
-          } else if (matchesKey(data, Key.pageUp) || data === "[") {
+          } else if (matchesKey(data, Key.pageUp) || key === "[") {
             previewOffset = Math.max(0, previewOffset - previewRows);
             tui.requestRender();
-          } else if (matchesKey(data, Key.pageDown) || data === "]") {
+          } else if (matchesKey(data, Key.pageDown) || key === "]") {
             previewOffset += previewRows;
             tui.requestRender();
-          } else if (matchesKey(data, Key.enter) || data === "r") {
+          } else if (matchesKey(data, Key.enter) || key === "r") {
             finishSelected("restore");
-          } else if (data === "q") {
+          } else if (key === "p") {
+            finishSelected("pop");
+          } else if (key === "q") {
             finishSelected("queue");
-          } else if (data === "Q") {
+          } else if (key === "Q") {
             finishSelected("submit-queue");
-          } else if (data === "e") {
+          } else if (key === "e") {
             finishEdit();
-          } else if (data === "l") {
+          } else if (key === "l") {
             finishToggleLock();
-          } else if (data === "d" || matchesKey(data, Key.delete)) {
+          } else if (key === "d" || matchesKey(data, Key.delete)) {
             finishDelete();
-          } else if (data === "D") {
+          } else if (key === "D") {
             finishDeleteAll();
           }
         },
@@ -1871,13 +2293,10 @@ function showBrowser(
             glyph ? `${glyph} ${label}` : label;
           const keyHint = (key: string, label: string) =>
             `${theme.fg("accent", key)} ${theme.fg("dim", label)}`;
+          // Letter actions only work outside the search field, so searching shows just Enter.
           const promptFooter = entry
             ? (searching
-                ? [
-                    keyHint("Enter", "Restore"),
-                    keyHint("q", "Draft"),
-                    keyHint("Q", "Queue"),
-                  ]
+                ? [keyHint("Enter", "Restore")]
                 : [
                     keyHint("Enter", "Restore"),
                     keyHint("q", "Draft"),
@@ -1885,6 +2304,7 @@ function showBrowser(
                     keyHint("l", entry.locked ? "Unlock" : "Lock"),
                     keyHint("d", "Delete"),
                     keyHint("e", "Edit"),
+                    keyHint("p", "Pop"),
                   ]
               ).join(theme.fg("dim", " "))
             : "";
@@ -2211,27 +2631,81 @@ function showBrowser(
   );
 }
 
+// Runs a step that only reads in one storage scope. A store that doesn't exist yet reads as empty.
+function readStore<T>(step: () => T): T {
+  return existsSync(stashDir()) ? inStore(false, step) : step();
+}
+
 function loadEntriesForUi(ctx: ExtensionContext): StashEntry[] {
-  const result = loadEntries();
-  if (result.skipped > 0) {
-    const noun = result.skipped === 1 ? "entry was" : "entries were";
-    ctx.ui.notify(
-      `${result.skipped} OMS ${noun} omitted because of safety checks or limits`,
-      "warning",
-    );
-  }
-  return result.entries;
+  const { entries, omitted } = loadEntries();
+  const dir = stashDir();
+  const plural = (count: number, one: string, many: string) => (count === 1 ? one : many);
+  const warn = (count: number, message: string) => {
+    if (count > 0) ctx.ui.notify(message, "warning");
+  };
+  const { permissions, damaged, unsupported, overLimit } = omitted;
+  warn(
+    permissions,
+    `${permissions} OMS ${plural(permissions, "stash is", "stashes are")} hidden because ${plural(permissions, "its file is", "their files are")} shared with other accounts. ${privateFileFix(dir, "/*.json")}`,
+  );
+  warn(
+    damaged,
+    `${damaged} damaged OMS stash ${plural(damaged, "file was", "files were")} set aside in ${dir} with an .invalid or .orphan suffix`,
+  );
+  warn(
+    unsupported,
+    `${unsupported} OMS stash ${plural(unsupported, "file", "files")} in ${dir} couldn't be loaded. ${plural(unsupported, "It", "They")} may come from a newer OhMyStash`,
+  );
+  warn(
+    overLimit,
+    `${overLimit} older OMS ${plural(overLimit, "stash is", "stashes are")} hidden because the store is over its limit of ${MAX_ENTRY_FILES} stashes or 16 MiB. Delete stashes you don't need to bring ${plural(overLimit, "it", "them")} back`,
+  );
+  return entries;
+}
+
+// Reports a restore, naming the attachments it had to leave out.
+function notifyRestored(ctx: ExtensionContext, summary: string, failures: AttachmentFailure[], detail: string): void {
+  if (failures.length === 0) ctx.ui.notify(`${summary}; ${detail}`, "info");
+  else ctx.ui.notify(`${summary}, but couldn't restore ${describeFailures(failures)}`, "warning");
 }
 
 async function stashCurrent(ctx: ExtensionContext): Promise<void> {
-  const draft = captureDraft(ctx);
-  if (draft.text.length === 0 && draft.attachments.length === 0) {
+  const composer = readComposerDraft(ctx);
+  if (composer.draft.text.length === 0 && composer.images.length === 0) {
     ctx.ui.notify("Nothing to stash", "info");
     return;
   }
-  saveEntry(draft.text, draft.inputMode, draft.attachments, currentStashOrigin(ctx));
+  const origin = currentStashOrigin(ctx);
+  const fileBacked = composer.images.length > 0 || Buffer.byteLength(composer.draft.text, "utf8") > MAX_PROMPT_BYTES;
+  const { draft, repeated } = inStore(true, () => {
+    const captured: CapturedDraft = fileBacked ? persistDraftAttachments(composer) : { ...composer.draft, attachments: [] };
+    // Stashing what this chat's newest stash already holds, for example after restoring it,
+    // updates that stash instead of adding a copy.
+    let newest: StashEntry | undefined;
+    try {
+      newest = loadEntries().entries.find((entry) => isCurrentChat(entry, origin.sessionId));
+    } catch {}
+    if (
+      newest && !newest.preserved && !STALE_TEMP.test(newest.fileName) &&
+      newest.text === captured.text && newest.inputMode === captured.inputMode &&
+      JSON.stringify(newest.attachments) === JSON.stringify(captured.attachments)
+    ) {
+      try {
+        replaceEntry(newest, newest.text, newest.attachments, newest.locked, new Date().toISOString());
+        return { draft: captured, repeated: true };
+      } catch (error) {
+        if (!(error instanceof EntryConflictError)) throw error;
+      }
+    }
+    saveEntry(captured.text, captured.inputMode, captured.attachments, origin);
+    return { draft: captured, repeated: false };
+  }, fileBacked);
   clearEditorAfterStash(ctx, draft.inputMode);
   const label = draft.inputMode === "queue" ? "Queue prompt" : "Prompt";
+  if (repeated) {
+    ctx.ui.notify(`${label} was already this chat's latest stash, so OMS kept that one`, "info");
+    return;
+  }
   const attachmentLabel =
     draft.attachments.length > 0
       ? ` with ${draft.attachments.length} ${draft.attachments.length === 1 ? "attachment" : "attachments"}`
@@ -2243,19 +2717,26 @@ async function stashCurrent(ctx: ExtensionContext): Promise<void> {
 }
 
 async function restoreLatest(ctx: ExtensionContext, requestedMode?: InputMode): Promise<void> {
-  if (ctx.mode !== "tui") return;
+  if (!isMainTui(ctx)) return;
   const current = parseEditorDraft(ctx.ui.getEditorText());
   if (hasEditorContent(ctx)) {
     ctx.ui.notify("Stash or clear the current editor before restoring a prompt", "warning");
     return;
   }
-  const entries = loadEntriesForUi(ctx);
-  const currentSessionId = ctx.sessionManager.getSessionId();
-  const currentEntries = entries.filter((candidate) => isCurrentChat(candidate, currentSessionId));
   const mode = requestedMode ?? (current.inputMode === "queue" ? "queue" : undefined);
-  const entry = mode
-    ? currentEntries.find((candidate) => candidate.inputMode === mode)
-    : currentEntries[0];
+  const restored = readStore(() => {
+    const entries = loadEntriesForUi(ctx);
+    const currentSessionId = ctx.sessionManager.getSessionId();
+    const currentEntries = entries.filter((candidate) => isCurrentChat(candidate, currentSessionId));
+    const entry = mode
+      ? currentEntries.find((candidate) => candidate.inputMode === mode)
+      : currentEntries[0];
+    if (!entry) return { entries };
+    const failures = restoreIntoComposer(ctx, entry);
+    markEntryUsed(entry);
+    return { entries, entry, failures };
+  });
+  const { entries, entry } = restored;
   if (!entry) {
     const label = mode === "queue" ? "No stashed queue prompts in this chat" : "No stashed prompts in this chat";
     const elsewhere = entries.length > 0
@@ -2264,15 +2745,17 @@ async function restoreLatest(ctx: ExtensionContext, requestedMode?: InputMode): 
     ctx.ui.notify(`${label}.${elsewhere}`, "info");
     return;
   }
-  setEditorDraft(ctx, entry);
   const label = entry.inputMode === "queue" ? "Queue prompt" : "Prompt";
-  ctx.ui.notify(
-    `${label} restored from ${entry.displayTimestamp}; restore never deletes stash files`,
-    "info",
+  notifyRestored(
+    ctx,
+    `${label} restored from ${entry.displayTimestamp}`,
+    restored.failures ?? [],
+    "restore never deletes stash files",
   );
 }
 
 async function toggleStash(ctx: ExtensionContext): Promise<void> {
+  if (!isMainTui(ctx)) return;
   const draft = parseEditorDraft(ctx.ui.getEditorText());
   if (hasEditorContent(ctx)) {
     await stashCurrent(ctx);
@@ -2285,106 +2768,149 @@ async function toggleStash(ctx: ExtensionContext): Promise<void> {
 const OPENING_BROWSERS = new WeakSet<object>();
 
 async function browse(ctx: ExtensionContext): Promise<void> {
-  if (ctx.mode !== "tui" || OPENING_BROWSERS.has(ctx.ui)) return;
+  if (!isMainTui(ctx) || OPENING_BROWSERS.has(ctx.ui)) return;
   OPENING_BROWSERS.add(ctx.ui);
   // The mounted browser owns input, so release after this turn; a browser that another
   // dialog displaced then stays reopenable.
   queueMicrotask(() => OPENING_BROWSERS.delete(ctx.ui));
-  let query = "";
-  let scope: BrowserScope = "current";
+  let state: BrowserState = { query: "", scope: "current", selectedIndex: 0 };
+  let entries = readStore(() => loadEntriesForUi(ctx));
   while (true) {
-    const entries = loadEntriesForUi(ctx);
     if (entries.length === 0) {
       ctx.ui.notify("No stashed prompts", "info");
       return;
     }
-    const action = await showBrowser(ctx, entries, query, scope);
+    const action = await showBrowser(ctx, entries, state);
     if (!action) return;
-    query = action.query;
-    scope = action.scope;
-    if (action.type === "edit") {
-      const result = await editEntry(ctx, action.entry, action.tui);
-      ctx.ui.notify(
-        result === "updated"
-          ? "Stashed prompt updated"
-          : result === "conflict-copy"
-            ? "Stash changed concurrently; edited text was preserved as a new stash"
-            : result === "quota-copy"
-              ? "OMS storage quota reached; edited text was preserved as a new stash"
-              : result === "unchanged"
-                ? "Stashed prompt unchanged"
-                : "Stashed prompt edit cancelled",
-        result === "quota-copy" ? "warning" : "info",
-      );
-      continue;
+    const { query, scope, selectedId, selectedIndex } = action;
+    state = { query, scope, selectedId, selectedIndex };
+    try {
+      const next = await runBrowserAction(ctx, action, entries);
+      if (!next) return;
+      entries = next;
+    } catch (error) {
+      if (!(error instanceof EntryConflictError)) throw error;
+      ctx.ui.notify("That stash changed in another session, so OMS reloaded the browser", "warning");
+      entries = readStore(() => loadEntriesForUi(ctx));
     }
-    if (action.type === "toggle-lock") {
-      setEntryLocked(action.entry, !action.entry.locked);
-      ctx.ui.notify(action.entry.locked ? "Stash unlocked" : "Stash locked", "info");
-      continue;
-    }
-    if (action.type === "submit-queue") {
-      submitQueuedEntry(ctx, action.entry);
-      continue;
-    }
-    if (action.type === "delete") {
-      if (action.entry.locked) {
-        ctx.ui.notify("Unlock this stash before deleting it", "warning");
-        continue;
-      }
-      const confirmed = await ctx.ui.confirm(
-        "Delete stashed prompt?",
-        `Permanently delete “${truncateToWidth(action.entry.displayHeadline, 80)}” from ${action.entry.displayTimestamp}${action.scope === "all" ? ` · ${action.entry.displayOrigin}` : ""}?`,
-        { initialIndex: 1 },
-      );
-      if (!confirmed) continue;
-      const deleted = removeEntry(action.entry);
-      ctx.ui.notify(deleted ? "Deleted stashed prompt" : "Stash entry was already deleted", "info");
-      continue;
-    }
-    if (action.type === "delete-all") {
-      const deletable = action.entries.filter((entry) => !entry.locked);
-      const locked = action.entries.length - deletable.length;
-      if (deletable.length === 0) {
-        ctx.ui.notify("Every stash is locked; nothing was deleted", "warning");
-        continue;
-      }
-      const count = deletable.length;
-      const scopeLabel = action.scope === "current" ? "from this chat" : "across all chats";
-      const confirmed = await ctx.ui.confirm(
-        `Delete unlocked stashes ${scopeLabel}?`,
-        `Permanently delete ${count} unlocked stashed ${count === 1 ? "prompt" : "prompts"} ${scopeLabel}? ${locked} locked ${locked === 1 ? "stash is" : "stashes are"} protected. This ignores the current search and cannot be undone.`,
-        { initialIndex: 1 },
-      );
-      if (!confirmed) continue;
-      const deleted = removeEntries(deletable);
-      ctx.ui.notify(
-        deleted === count
-          ? `Deleted ${deleted} unlocked stashed ${deleted === 1 ? "prompt" : "prompts"}; ${locked} locked protected`
-          : `Deleted ${deleted} of ${count} unlocked stashed prompts; ${locked} locked protected`,
-        "info",
-      );
-      continue;
-    }
-    if (hasEditorContent(ctx)) {
-      ctx.ui.notify("Stash or clear the current editor before restoring a prompt", "warning");
-      continue;
-    }
-    if (action.type === "queue") {
-      setEditorDraft(ctx, action.entry, true);
-      ctx.ui.notify(
-        `Inserted queued draft from ${action.entry.displayTimestamp}; stash file retained`,
-        "info",
-      );
-    } else {
-      setEditorDraft(ctx, action.entry);
-      ctx.ui.notify(
-        `Restored prompt from ${action.entry.displayTimestamp}; restore never deletes stash files`,
-        "info",
-      );
-    }
-    return;
   }
+}
+
+// Runs one browser action. Returns the stashes for the next opening, loaded in the action's own
+// storage scope, or undefined when the browser stays closed.
+async function runBrowserAction(
+  ctx: ExtensionContext,
+  action: NonNullable<BrowserAction>,
+  entries: StashEntry[],
+): Promise<StashEntry[] | undefined> {
+  const thenReload = <T>(step: () => T) => readStore(() => {
+    const value = step();
+    return { value, next: loadEntriesForUi(ctx) };
+  });
+  if (action.type === "edit") {
+    const edit = await editEntryText(ctx, action.entry, action.tui);
+    if (typeof edit === "string") {
+      ctx.ui.notify(edit === "unchanged" ? "Stashed prompt unchanged" : "Stashed prompt edit cancelled", "info");
+      return entries;
+    }
+    const { value: result, next } = thenReload(() => setEntryText(action.entry, edit.text));
+    ctx.ui.notify(
+      result === "updated"
+        ? "Stashed prompt updated"
+        : result === "conflict-copy"
+          ? "Stash changed concurrently; edited text was preserved as a new stash"
+          : "OMS storage quota reached; edited text was preserved as a new stash",
+      result === "quota-copy" ? "warning" : "info",
+    );
+    return next;
+  }
+  if (action.type === "toggle-lock") {
+    const { next } = thenReload(() => setEntryLocked(action.entry, !action.entry.locked));
+    ctx.ui.notify(action.entry.locked ? "Stash unlocked" : "Stash locked", "info");
+    return next;
+  }
+  if (action.type === "submit-queue") {
+    const { value: outcome, next } = thenReload(() => submitQueuedEntry(ctx, action.entry));
+    return outcome === "drafted" ? undefined : next;
+  }
+  if (action.type === "delete") {
+    if (action.entry.locked) {
+      ctx.ui.notify("Unlock this stash before deleting it", "warning");
+      return entries;
+    }
+    const confirmed = await ctx.ui.confirm(
+      "Delete stashed prompt?",
+      `Permanently delete “${truncateToWidth(action.entry.displayHeadline, 80)}” from ${action.entry.displayTimestamp}${action.scope === "all" ? ` · ${action.entry.displayOrigin}` : ""}?`,
+      { initialIndex: 1 },
+    );
+    if (!confirmed) return entries;
+    const { value: deleted, next } = thenReload(() => {
+      const removed = removeEntry(action.entry);
+      collectAttachmentGarbage(checkedStashDir(false));
+      return removed;
+    });
+    ctx.ui.notify(deleted ? "Deleted stashed prompt" : "Stash entry was already deleted", "info");
+    return next;
+  }
+  if (action.type === "delete-all") {
+    const deletable = action.entries.filter((entry) => !entry.locked);
+    const locked = action.entries.length - deletable.length;
+    if (deletable.length === 0) {
+      ctx.ui.notify("Every stash is locked; nothing was deleted", "warning");
+      return entries;
+    }
+    const count = deletable.length;
+    const scopeLabel = action.scope === "current" ? "from this chat" : "across all chats";
+    const confirmed = await ctx.ui.confirm(
+      `Delete unlocked stashes ${scopeLabel}?`,
+      `Permanently delete ${count} unlocked stashed ${count === 1 ? "prompt" : "prompts"} ${scopeLabel}? ${locked} locked ${locked === 1 ? "stash is" : "stashes are"} protected. This ignores the current search and cannot be undone.`,
+      { initialIndex: 1 },
+    );
+    if (!confirmed) return entries;
+    const { value: deleted, next } = thenReload(() => removeEntries(deletable));
+    ctx.ui.notify(
+      deleted === count
+        ? `Deleted ${deleted} unlocked stashed ${deleted === 1 ? "prompt" : "prompts"}; ${locked} locked protected`
+        : `Deleted ${deleted} of ${count} unlocked stashed prompts; ${locked} locked protected`,
+      "info",
+    );
+    return next;
+  }
+  if (hasEditorContent(ctx)) {
+    ctx.ui.notify("Stash or clear the current editor before restoring a prompt", "warning");
+    return entries;
+  }
+  const { entry } = action;
+  const pop = action.type === "pop";
+  const { failures, outcome } = readStore(() => {
+    // A popped stash is deleted right after, so OMP makes its own image links.
+    const restored = restoreIntoComposer(ctx, entry, { forceQueue: action.type === "queue", links: !pop });
+    // A pop keeps a locked stash, and one whose attachments didn't all come back.
+    if (!pop || entry.locked || restored.length > 0) {
+      markEntryUsed(entry);
+      return { failures: restored, outcome: "kept" as const };
+    }
+    try {
+      removeEntry(entry);
+    } catch (error) {
+      if (!(error instanceof EntryConflictError)) throw error;
+      return { failures: restored, outcome: "changed" as const };
+    }
+    collectAttachmentGarbage(checkedStashDir(false));
+    return { failures: restored, outcome: "deleted" as const };
+  });
+  if (action.type === "queue") {
+    notifyRestored(ctx, `Inserted queued draft from ${entry.displayTimestamp}`, failures, "stash file retained");
+  } else if (!pop) {
+    notifyRestored(ctx, `Restored prompt from ${entry.displayTimestamp}`, failures, "restore never deletes stash files");
+  } else if (outcome === "deleted") {
+    ctx.ui.notify(`Popped prompt from ${entry.displayTimestamp}; the stash is deleted`, "info");
+  } else if (outcome === "changed") {
+    ctx.ui.notify(`Restored prompt from ${entry.displayTimestamp}, but kept the stash because it changed in another session`, "warning");
+  } else {
+    notifyRestored(ctx, `Restored prompt from ${entry.displayTimestamp}`, failures, "locked stashes stay after a pop");
+  }
+  return undefined;
 }
 
 async function run(ctx: ExtensionContext, action: () => Promise<void>): Promise<void> {
@@ -2392,15 +2918,25 @@ async function run(ctx: ExtensionContext, action: () => Promise<void>): Promise<
     await action();
   } catch (error) {
     const raw = error instanceof Error ? error.message : String(error);
-    const message = truncateToWidth(displayText(raw).replaceAll("\n", " "), 160);
+    // Long enough for a storage error's path and the command that fixes it.
+    const message = truncateToWidth(displayText(raw).replaceAll("\n", " "), 320);
     ctx.ui.notify(`OMS failed: ${message}`, "error");
   }
 }
 
+// Subagents load every plugin in-process, in print mode. Only the main TUI session owns the UI and
+// the store's per-session work.
+function isMainTui(ctx: ExtensionContext): boolean {
+  return ctx.agent.kind === "main" && ctx.mode === "tui";
+}
+
 export default async function promptStash(pi: ExtensionAPI): Promise<void> {
-  pluginConfig = await loadPluginConfig(process.cwd());
+  // Registration reads its own copy of the settings, so a subagent's load can't change the main
+  // session's.
+  const config = await loadPluginConfig(process.cwd());
 
   pi.on("session_start", async (_event, ctx) => {
+    if (!isMainTui(ctx)) return;
     pluginConfig = await loadPluginConfig(ctx.cwd);
     installEditorBridge(ctx);
     if (pluginConfig.retentionDays > 0) {
@@ -2410,15 +2946,15 @@ export default async function promptStash(pi: ExtensionAPI): Promise<void> {
     }
   });
 
-  if (pluginConfig.stashShortcut !== "none") {
-    pi.registerShortcut(pluginConfig.stashShortcut as KeyId, {
+  if (config.stashShortcut !== "none") {
+    pi.registerShortcut(config.stashShortcut as KeyId, {
       description: "Stash current prompt, or restore this chat's latest stash when the editor is empty",
       handler: async (ctx) => run(ctx, () => toggleStash(ctx)),
     });
   }
 
-  if (pluginConfig.browserShortcut !== "none") {
-    pi.registerShortcut(pluginConfig.browserShortcut as KeyId, {
+  if (config.browserShortcut !== "none") {
+    pi.registerShortcut(config.browserShortcut as KeyId, {
       description: "Browse this chat's stashes, with every chat one key away",
       handler: async (ctx) => run(ctx, () => browse(ctx)),
     });

@@ -77,7 +77,10 @@ async function useSettings(settings: Record<string, unknown>): Promise<void> {
     JSON.stringify({ settings: { "@hkay-dev/ohmystash": settings } }),
     { mode: 0o600 },
   );
-  await refreshConfig({}, { cwd: agentDir } as ExtensionContext);
+  // session_start reloads the settings only for the main TUI session.
+  await refreshConfig({}, {
+    cwd: agentDir, mode: "tui", agent: { kind: "main" }, ui: { setEditorComponent() {} },
+  } as unknown as ExtensionContext);
 }
 
 // Opens the browser for one chat, sends keys to the first view, and closes every later view.
@@ -91,6 +94,7 @@ async function browse(
   const context = {
     cwd: agentDir,
     mode: "tui",
+    agent: { kind: "main" },
     sessionManager: { getSessionId: () => sessionId },
     ui: {
       custom(factory: BrowserFactory) {

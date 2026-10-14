@@ -12,13 +12,13 @@ I had a ton of fun making this, and I hope you find it just as useful as I do!
 
 ## Install
 
-OMP's plugin manager uses Bun for package installation:
+You need OMP 18.10.4 or newer. OMP's plugin manager installs packages with Bun, so `bun` has to be on your PATH. On macOS:
 
 ```sh
 brew install bun
 ```
 
-Version 1.11.0 works with stock OMP 18.10.3. The browser and option pickers open in OMP's stock bottom overlay, like the built-in Switch Model dialog. They span the full width with square, accent-colored frames and no dimming, and they leave your draft, caret, and undo history untouched.
+On Linux and Windows, follow the install steps at [bun.sh](https://bun.sh).
 
 Install directly from GitHub:
 
@@ -26,7 +26,7 @@ Install directly from GitHub:
 omp plugin install github:hkay-dev/OhMyStash
 ```
 
-OMP installs the standard SDK dependencies automatically. No custom OMP executable, SDK archives, or separate installer is needed. To pin this release, use `github:hkay-dev/OhMyStash#v1.11.0` instead.
+OMP installs the standard SDK dependencies for you, so there's no custom OMP build or separate installer. To pin this release, use `github:hkay-dev/OhMyStash#v1.12.0` instead.
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
@@ -42,7 +42,7 @@ Check the installed package and extension manifest with:
 omp plugin doctor @hkay-dev/ohmystash
 ```
 
-OMP uses the package ID `@hkay-dev/ohmystash` for plugin settings and diagnostics. Existing stash storage paths do not change.
+OMP uses the package ID `@hkay-dev/ohmystash` for plugin settings and diagnostics. Existing stash storage paths don't change.
 
 ## Primary Usage
 
@@ -50,29 +50,30 @@ OMP uses the package ID `@hkay-dev/ohmystash` for plugin settings and diagnostic
 
 Press `Alt+S` while the composer contains a prompt to stash it immediately. The composer clears so you can move to something else.
 
-Press `Alt+S` on an empty composer to restore the newest stash from the current chat. The stash remains saved after restoration.
+Press `Alt+S` on an empty composer to restore the newest stash from the current chat. The stash stays saved after it's restored. If you stash that same draft again, OMS keeps the one stash instead of adding a copy.
 
 ### `Alt+Shift+S`: open the browser
 
 Press `Alt+Shift+S` to open the full stash browser. The browser supports preview, search, chat scope, queue actions, editing, locking, and deletion.
 
-Considerable work went into the browser's visual hierarchy, color treatment, spacing, and keyboard flow.
-
-The browser opens in OMP's stock bottom overlay, with square, accent-colored borders and an embedded title. It leaves your draft, caret, undo history, and attachments untouched. Contextual Nerd Font glyphs honor **Show icons** without changing OMP's global symbol preset. Use a Nerd Font or symbols fallback to display them. This shared frame does not replace the browser's mature search, chat scope, queue, attachment, edit, lock, recovery, retention, or adaptive-layout behavior.
+The browser opens in OMP's stock bottom overlay, like the built-in Switch Model dialog, with square accent-colored borders and the title in the top border. Your draft, caret, undo history, and attachments stay as they were. The contextual Nerd Font glyphs follow **Show icons** and don't touch OMP's global symbol preset. You need a Nerd Font, or a symbols fallback, to see them.
 
 ## Browser capabilities
 
-You can do quite a bit more in the browser: 
+You can do quite a bit more in the browser:
 
 - **Chat scope.** Open stashes from the current chat and press `g` to switch to all chats.
 - **Source metadata.** Global entries show the source chat, workspace, timestamp, and short session ID.
 - **Search.** Filter prompt text, chat names, workspaces, timestamps, queue mode, locks, and attachments.
 - **Queue draft.** Press `q` to place the selected stash in the composer as an editable `/queue` draft.
 - **Submit queue.** Press `Shift+Q` to prepend `/queue ` and submit the selected stash while keeping the browser open for more.
+- **Pop.** Press `p` to restore the selected stash and delete it in one go. A locked stash stays.
 - **Attachments.** Restore images and collapsed large pastes with the prompt that owns them.
 - **Editing.** Press `e` to edit a stash with the configured editor or OMP's built-in editor.
 - **Locking.** Lock reusable stashes so deletion leaves them alone.
 - **Scoped deletion.** Delete one unlocked stash or clear unlocked stashes from the current browser scope.
+
+After an action, the browser reopens on the stash you were on, or on the same row once that stash is gone. If another OMP session changed a stash while your browser was open, OMS tells you, reloads, and leaves the other session's change alone.
 
 ## More Features!
 
@@ -90,7 +91,7 @@ Regular `q` comes first. It puts the stash into the composer as an editable `/qu
 
 ### Submit queue
 
-`Shift+Q` prepends `/queue `, submits the stash immediately, and keeps the browser open. Repeat it to stack messages in OMP's queue, then press `Esc` to exit.
+`Shift+Q` prepends `/queue `, submits the stash immediately, and keeps the browser open on the same stash. Repeat it to stack messages in OMP's queue, then press `Esc` to exit.
 
 Stash or clear any draft in the composer before restoring or submitting a saved prompt. This includes drafts that contain only images.
 
@@ -98,13 +99,13 @@ Stash or clear any draft in the composer before restoring or submitting a saved 
 
 ### Search
 
-Search narrows the current scope as you type.
+Press `/` and type. Search narrows the current scope as you go. While you're typing, every letter goes into the search, `q` and `Q` included. Press `Enter` to restore the selected match, or `Tab` to keep the filter and get the letter keys back for queueing, popping, editing, locking, and deleting.
 
 ![OhMyStash global search](assets/ohmystash-feature-search.gif)
 
 ### Attachments
 
-Images and large pasted bodies return with their stash.
+Images and large pasted bodies return with their stash. If a stored image or paste is damaged or missing, OMS still restores the rest of the prompt and tells you which attachment it couldn't bring back.
 
 ![OhMyStash attachment restoration](assets/ohmystash-feature-attachments.gif)
 
@@ -129,11 +130,12 @@ Locked stashes remain protected during bulk deletion.
 | Open the browser from the composer | `/stash` |
 | Restore the newest stash from this chat | `/stash restore` |
 | Switch between This chat and All chats | `g` |
-| Start fuzzy search | `/` |
-| Keep the current filter selected | `Tab` |
+| Start search | `/` |
+| Leave the search, keep its filter, and use the letter keys | `Tab` |
 | Restore the selected stash | `Enter` |
 | Insert an editable queue draft | `q` |
 | Prepend `/queue ` and submit the selected stash | `Shift+Q` |
+| Restore the selected stash and delete it, unless it's locked | `p` |
 | Edit the selected stash | `e` |
 | Lock or unlock the selected stash | `l` |
 | Delete the selected unlocked stash | `d` or `Delete` |
@@ -157,9 +159,7 @@ Available settings:
 - **Retention days**: `0` keeps stashes indefinitely
 - **Show icons**, controlling contextual Nerd Font glyphs in the stash browser
 
-Retention removes only expired, unlocked, normal stashes. Locked stashes, conflict copies, and recovery entries do not expire.
-
-Pickers open in OMP's stock bottom overlay, like Switch Model: full width, with no dimming. Conversation history keeps its colors, so no backdrop settings are needed. Your draft, caret, and undo history stay untouched. `/settings` → **Plugins** keeps OMP's native settings chrome.
+Retention counts from the last time you stashed or restored a prompt, so a stash you keep reusing doesn't expire. It removes only expired, unlocked, normal stashes. Locked stashes, conflict copies, and recovery entries don't expire.
 
 All the same settings are available from the CLI:
 
@@ -187,7 +187,7 @@ Representative medians:
 
 | Operation | Median |
 | --- | ---: |
-| Plain stash save | 0.249 ms |
+| Plain stash save into 100 stashes, with the repeat check | 2.382 ms |
 | Warm load, 100 entries | 0.995 ms |
 | Literal search | 0.00121 ms |
 | Fuzzy search | 0.0824 ms |
@@ -210,6 +210,8 @@ Cross-chat benchmark medians:
 | Split render | 0.016 ms | 0.025 ms |
 | Stacked render | 0.015 ms | 0.018 ms |
 | Compact render | 0.005 ms | 0.007 ms |
+
+On Windows, OMS checks folder and file permissions with a small PowerShell helper. Each stash, restore, or browser action costs one helper launch, and the helper compiles its checks once and reuses them.
 
 ## Storage and limits
 
@@ -234,14 +236,66 @@ Limits:
 - 2 MiB serialized stash metadata
 - 256 normal active stashes
 - 16 MiB normal metadata budget
+- 1 GiB of attachments across all chats
 
-Conflict copies and complete recovery files load outside the normal count and metadata caps. Attachments remain content-addressed for recovery and deduplication.
+Conflict copies and complete recovery files load outside the normal count and metadata caps. Attachments are content-addressed, so an image you stash twice is stored once, and the attachment limit counts it once.
+
+OMS cleans up after itself:
+
+- After you delete stashes, or retention removes some, it deletes attachments that no stash file names any more, once they're more than a minute old. A save that runs into the attachment limit cleans up first, too.
+- It deletes asset temp files a crash left behind once they're a day old, and damaged recovery files it set aside as `*.orphan` once they're a week old.
+- A stash file that isn't valid JSON gets renamed to `*.invalid` once, so it stops warning you and stops counting against the limits. Delete it when you don't need it.
+
+On Windows, the permission helper keeps its compiled checks in the stash folder as `.storage-permissions-<hash>.dll`. It's safe to delete; OMS builds it again.
 
 A separate filesystem backup is still required for hardware failure, filesystem corruption, or machine loss.
 
+## Troubleshooting
+
+Messages that start with `OMS failed:` stopped an action. The others are warnings. Paths below are the default ones; yours may differ.
+
+**`OMS storage directory is shared with other accounts. Run: chmod 700 '~/.omp/agent/prompt-stash'`**
+OMS only uses a stash folder that other accounts can't open, and this one lets them in. That usually happens after copying it with `cp -r` or a sync tool. Run the command from the message (it has your full path). The attachment folder gets the same message with its own path.
+
+**`OMS storage directory belongs to another account. Run: sudo chown -R "$(id -un)" '...'`**
+The folder was created by another user, for example by running OMP with `sudo` once. The command gives it back to you.
+
+**`OMS storage directory ... is a symbolic link. Replace it with the real directory`**
+OMS doesn't follow links for its storage. Move the real folder to that path.
+
+**`OMS storage directory ... must be private to your account (...). Remove other accounts from its Security settings`** (Windows)
+Open the folder's Properties, then Security, and leave only your own account. OMS sets up new folders this way by itself.
+
+**`3 OMS stashes are hidden because their files are shared with other accounts. Run: chmod 600 '...'/*.json`**
+Those stash files can be read by other accounts, so OMS leaves them out of the browser until you fix them. Run the command from the message. A shared attachment says `OMS attachment is shared with other accounts` with its own `chmod 600` command.
+
+**`2 damaged OMS stash files were set aside in ... with an .invalid or .orphan suffix`**
+Those files weren't valid stashes, for example after a disk error or a sync conflict. OMS renamed them once and won't mention them again. Look inside if you want, then delete them.
+
+**`1 OMS stash file in ... couldn't be loaded. It may come from a newer OhMyStash`**
+The file is valid JSON, but this version doesn't understand it, so OMS leaves it alone. Update OhMyStash.
+
+**`5 older OMS stashes are hidden because the store is over its limit of 256 stashes or 16 MiB. Delete stashes you don't need to bring them back`**
+The browser shows the newest stashes that fit. Delete or pop stashes you no longer need and the older ones come back.
+
+**`OMS storage quota reached across all chats. Open the stash browser and press g to manage it`**
+A new stash would go over the 256-stash or 16 MiB limit. Press `g` in the browser to see every chat's stashes and delete the ones you don't need. Locked stashes count too.
+
+**`OMS attachment storage is full (1 GiB across all chats). ...`**
+Your stashed images and large pastes add up to 1 GiB. OMS already cleaned up unused attachments before saying this, so delete stashes that carry big attachments. Stashes without new attachments still save.
+
+**`Restored prompt from ..., but couldn't restore Image #2 (damaged)`**
+The stored copy of that attachment failed its checks, so OMS restored everything else and left a plain `[Image #2 unavailable]` note where the image was. Stashing the same image again repairs the stored copy. `Shift+Q` puts such a stash in the composer instead of submitting it, so you can look first.
+
+**`That stash changed in another session, so OMS reloaded the browser`**
+Another OMP window locked, edited, or deleted that stash after your browser loaded it. Nothing was overwritten. Try again on the reloaded list.
+
+**`Restart OMP once so OhMyStash can attach to the native editor`**
+OhMyStash attaches to the composer when a session starts. Restart OMP after installing or updating it.
+
 ## Development
 
-Use Bun 1.4.2. Development dependencies pin the official SDK packages to 18.10.3, with `^18.10.3` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
+Use Bun 1.4.3. Development dependencies pin the official SDK packages to 18.10.4, with `^18.10.4` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
@@ -250,90 +304,9 @@ bun test
 bun run benchmark:cross-chat
 ```
 
-OhMyStash 1.11.0 runs on stock OMP 18.10.3. The extension entry point remains `extensions/prompt-stash.ts`.
+The extension entry point is `extensions/prompt-stash.ts`.
 
-### Shared picker UI
-
-Version 1.11.0 exports the common picker helpers at `@hkay-dev/ohmystash/ui`, using only stock public SDK exports:
-
-- `OVERLAY_OPTIONS` is `{ overlay: true }`, the `ctx.ui.custom` options for OMP's stock bottom overlay. Like Switch Model, it spans the full width, can use every terminal row, and adds no backdrop.
-- `createFrame(theme, width)` returns square, accent-colored `top`, `row`, `divider`, and `bottom` renderers, with an embedded title and terminal-width-safe content.
-- `fitToWidth(text, width)` clips and pads text to the requested visible terminal width, accounting for ANSI styling and wide characters.
-- `extensionIcon(key)` reads the Nerd Font symbol preset and returns an empty string for an unknown key. It does not change the host symbol preset or read a plugin's Show icons setting; callers apply their own setting.
-- `selectOption(ctx, title, options, iconKey?)` opens a searchable, keyboard-navigable picker in that overlay and resolves to the selected string, or `undefined` on cancellation. The host composer's draft, caret, undo history, and attachments stay untouched. It runs on the shared list below and keeps its own rows, keys, and results.
-- `showList(ctx, options)` opens a searchable list of any items in that overlay. It resolves to the result of the footer action that closed it, or `undefined` when Esc, Ctrl+C, or the optional `toggleKey` closes it.
-- `createList(tui, theme, options, done)` returns the same list as a component, for a plugin that shows it inside its own overlay component. Its `select(item)` moves the selection.
-- `formatShortcut(key, { icons })` formats an OMP key id such as `alt+shift+s`. By default it draws Nerd Font Apple keyboard icons in macOS menu order, separated by spaces. With `icons: false` it gives plain text such as `Alt+Shift+S`. A blank key or `none` gives an empty string.
-- `formatShortcutRange(keys, { icons })` formats several keys and skips blank and `none` keys. Three or more keys with the same modifiers and consecutive digits collapse into one range, such as `Alt+1-5`.
-- `ShortcutHintDeclaration` types one entry of the `hkay.shortcutHints` package field described below.
-
-The list options are:
-
-| Option | Meaning |
-| --- | --- |
-| `items` | The items, or a function that returns the current items of a list that changes while it is open. |
-| `title` | The frame title, or a function of `{ query, matches, total, selected }`, for example to show match counts. |
-| `renderItem(item, { width, selected, theme, compact })` | One row per item, or two rows for two-line items. The compact layout shows only the first row. |
-| `search(item)` | The text that every search word must appear in, ignoring case. Defaults to `String(item)`. |
-| `filter(items, query)` | Replaces that search with your own matching and order. |
-| `id(item)` | Keeps the selection on the same item when the items change. |
-| `selected` | The item to select when the list opens. |
-| `emptyLabel` | Shown when nothing matches. A function gets the same state as `title`. |
-| `prompt`, `placeholder` | The label before the search field and the dim text in the empty field. |
-| `actions` | Footer actions, `{ key, label, run(item) }`. `run` gets the selected item, or `undefined` when nothing matches. It returns a result to close the list with it, or `undefined` to keep the list open and repaint it. A returned promise is awaited first. The primary action uses the `enter` key. |
-| `toggleKey` | Another key that closes the list, such as the shortcut that opened it. |
-
-Up and Down move the selection, PgUp and PgDn move a page, and Home and End jump to either end. The list can use the whole overlay height, but it never draws more rows than the terminal has or lines wider than the overlay. Paging keeps the selected item in the middle. Below 12 rows the list switches to a compact layout that keeps the title and search row. The full layout adds the position, such as `3 of 20`, with the move and page keys. The footer lists the actions.
-
-Custom pickers call `ctx.ui.custom(factory, OVERLAY_OPTIONS)`, so OMP shows them in the same bottom overlay as Switch Model and leaves the composer untouched underneath. Extensions consuming this subpath must install `@hkay-dev/ohmystash` as a package dependency before registration. Companion plugins can use `github:hkay-dev/OhMyStash#v1.11.0`; OMP installs declared dependencies through its normal package manager. Copying a standalone extension file or linking extracted files without installing dependencies does not supply the shared module.
-
-#### Shortcut hint declarations
-
-A plugin can list its shortcuts in a top-level `hkay.shortcutHints` field of its `package.json`, outside the `omp` block that OMP reads, so other plugins can read and show them:
-
-```json
-"hkay": { "shortcutHints": [ { "label": "stash", "settings": ["Stash shortcut"], "priority": 10 } ] }
-```
-
-`settings` names one or more of the plugin's own `omp.settings` string settings. A reader takes each current value from the plugin's settings and falls back to that setting's manifest `default`; `none` means no shortcut. Lower `priority` values come first. OhMyStash declares `stash` for Stash shortcut, priority 10, and `stashes` for Browser shortcut, priority 20.
-
-### Install archive
-
-The install archive has `package.json` and the four extension runtime files. Full documentation, demo media, tests, benchmarks, and capture tools stay in the repository.
-
-The package `files` allowlist limits npm and Bun packs. GitHub downloads also use `.gitattributes` export rules because Bun's Git dependency installer does not apply the `files` allowlist. `git archive` uses the same export rules when preparing a release package.
-
-### Packaged installed-runtime proof
-
-Use the existing [settings capture](showcase/ohmystash-settings.video.ts) to check a real package archive through the installed compiled OMP loader, not `-e` against this worktree. Review the installed version's contracts first. The recipe below targets stock OMP 18.10.3 using its tagged [CLI](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.10.3/docs/cli-reference.md), [loader](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.10.3/docs/extension-loading.md), [installer](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.10.3/docs/plugin-manager-installer-plumbing.md), and [root-path](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.10.3/docs/environment-variables.md) documentation. A newer source checkout is not matching-version evidence.
-
-From this repository, with the existing capture dependencies available:
-
-```sh
-export OMS_CAPTURE_OUTPUT="$(mktemp -d "${TMPDIR:-/tmp}/ohmystash-proof.XXXXXX")"
-mkdir "$OMS_CAPTURE_OUTPUT/source"
-git archive HEAD | tar -x -C "$OMS_CAPTURE_OUTPUT/source"
-artifact_name="$(npm pack "$OMS_CAPTURE_OUTPUT/source" --ignore-scripts --pack-destination "$OMS_CAPTURE_OUTPUT")"
-export OMS_CAPTURE_ARTIFACT="$OMS_CAPTURE_OUTPUT/$artifact_name"
-export OMS_CAPTURE_OMP="$(command -v omp)"
-export OMS_CAPTURE_OMP_VERSION=18.10.3
-npm exec -- tcut test showcase/ohmystash-settings.video.ts
-npm run capture:settings
-npm exec -- tcut doctor "$OMS_CAPTURE_OUTPUT/ohmystash-release.cast"
-ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_name,width,height,avg_frame_rate -of json "$OMS_CAPTURE_OUTPUT/ohmystash-release.mp4"
-```
-
-`git archive` above exports the committed revision's runtime files, then `npm pack` creates the install archive without lifecycle scripts. For an approved release artifact, set `OMS_CAPTURE_ARTIFACT` to that archive instead. Record the revision and SHA-256; a local pack is not publication evidence. The helper requires the exact expected version and a compiled executable, with no source-launcher fallback.
-
-Before OMP can import any extension, the helper clears inherited profile/credential/session environment values and creates private HOME, agent, cwd, temporary and XDG roots. It writes reviewed startup/background-disable and display settings plus the catalog described below, never live config, models, auth or stashes. It installs the archive and exact matching-version SDK peers into a disposable consumer with Bun lifecycle scripts disabled, records peer versions, registers the installed package with isolated `omp plugin link`, and starts compiled OMP without `-e` or `--no-extensions`. Linking extracted bytes alone doesn't supply runtime dependencies such as `pi-tui`. Dependency installation may fetch public packages; no prompt is submitted.
-
-Local commands still need a selected model. The fixture writes credential-free synthetic Flash catalog metadata with a reserved `.invalid` endpoint and selects only that entry. This allows local UI commands; it doesn't provide a backend or prove Gemini inference.
-
-The captured sequence exercises Alt+S save/restore, Alt+Shift+S browser entry, Enter restore, one retained synthetic stash under the isolated agent root, and plugin settings visibility. Successful shutdown removes only that run's fixture. Failure leaves the private fixture for diagnosis. The JSON receipt is `prepared` until those consumer assertions and exit status 0 succeed, then `consumer-exercised`; it does not claim media acceptance. Inspect both PNGs, the GIF/MP4, and the complete raw cast/header, including hidden intervals and environment values, before accepting release evidence.
-
-This is one-session PTY shortcut/TUI/storage evidence with the recorded dependency graph. It doesn't establish physical OS key delivery, queue dispatch or model inference, attachments, restart durability, registry publication or upgrades. Background discovery may contact public metadata endpoints; fresh roots aren't a network/OS sandbox.
-
-The older browser showcase and `capture:all` use worktree/seeded fixtures, and their queue-submit scene can dispatch inference. They are not this packaged-release check or a no-credentials/offline recipe. Do not use them as installed-release evidence.
+OhMyStash also exports its picker helpers at `@hkay-dev/ohmystash/ui`, so other OMP plugins can draw the same overlay, lists, and key labels. The API is in [docs/ui.md](docs/ui.md). Release packaging and the installed-runtime proof are in [docs/releasing.md](docs/releasing.md).
 
 ## Credits
 

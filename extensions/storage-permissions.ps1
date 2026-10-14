@@ -430,10 +430,96 @@ public static class StorageAclNative
 }
 '@
 
+# Compiling the C# above is most of a launch, so the compiled assembly is cached in the private
+# directory under a name keyed by the source hash. Only this account, SYSTEM, and Administrators may
+# own the cached file or have any access to it, and its checks and bytes come from one open handle
+# that blocks writes, renames, and deletes meanwhile, so another account can't swap in other code.
+$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$trusted = @('S-1-5-18', 'S-1-5-32-544')
+
+function Test-TrustedSecurity($security) {
+    $owner = $security.GetOwner([System.Security.Principal.SecurityIdentifier])
+    if ($null -eq $owner -or -not ($user.Equals($owner) -or $trusted -contains $owner.Value)) { return $false }
+    foreach ($rule in $security.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+            -not ($user.Equals($rule.IdentityReference) -or $trusted -contains $rule.IdentityReference.Value)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Read-TrustedAssembly([string]$path) {
+    try {
+        $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::Read)
+    } catch { return $null }
+    try {
+        if ($stream.Length -le 0 -or $stream.Length -gt 16MB -or
+            -not (Test-TrustedSecurity $stream.GetAccessControl())) { return $null }
+        $bytes = New-Object byte[] ([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($read -le 0) { return $null }
+            $offset += $read
+        }
+        return ,$bytes
+    } catch { return $null } finally { $stream.Dispose() }
+}
+
+# A check only reads the cache: adding the cached file changes its directory's modification time,
+# which would fail a check of that directory against the caller's earlier stat.
+function Get-StorageAclNative([string]$cache, [bool]$write) {
+    if ($cache -and [System.IO.Directory]::Exists($cache)) {
+        try {
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $hash = [System.BitConverter]::ToString($sha.ComputeHash(
+                    [System.Text.Encoding]::UTF8.GetBytes($source))).Replace('-', '').ToLowerInvariant()
+            } finally { $sha.Dispose() }
+            $cached = [System.IO.Path]::Combine($cache, ".storage-permissions-$hash.dll")
+            $bytes = Read-TrustedAssembly $cached
+            if ($null -ne $bytes) {
+                try { return [System.Reflection.Assembly]::Load($bytes).GetType('StorageAclNative', $true) } catch {}
+            }
+            if ($write -and (Test-TrustedSecurity ([System.IO.Directory]::GetAccessControl($cache)))) {
+                # A temp name, then a rename, so a reader never sees a half-written assembly.
+                $partial = [System.IO.Path]::Combine($cache,
+                    ".storage-permissions-" + [guid]::NewGuid().ToString('N') + ".partial")
+                try {
+                    $parameters = New-Object System.CodeDom.Compiler.CompilerParameters
+                    $parameters.GenerateInMemory = $false
+                    $parameters.OutputAssembly = $partial
+                    [void]$parameters.ReferencedAssemblies.Add('System.dll')
+                    [void]$parameters.ReferencedAssemblies.Add('System.Core.dll')
+                    $compiled = (New-Object Microsoft.CSharp.CSharpCodeProvider).CompileAssemblyFromSource(
+                        $parameters, $source)
+                    if (-not $compiled.Errors.HasErrors) {
+                        $bytes = Read-TrustedAssembly $partial
+                        if ($null -ne $bytes) {
+                            $type = [System.Reflection.Assembly]::Load($bytes).GetType('StorageAclNative', $true)
+                            try {
+                                if ([System.IO.File]::Exists($cached)) { [System.IO.File]::Delete($cached) }
+                                [System.IO.File]::Move($partial, $cached)
+                            } catch {}
+                            return $type
+                        }
+                    }
+                } finally {
+                    if ([System.IO.File]::Exists($partial)) { [System.IO.File]::Delete($partial) }
+                }
+            }
+        } catch {}
+    }
+    Add-Type -TypeDefinition $source -Language CSharp
+    return [StorageAclNative]
+}
+
 try {
     $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
-    Add-Type -TypeDefinition $source -Language CSharp
-    $reply = [StorageAclNative]::Execute([string]$request.action, [string]$request.path, [string]$request.root)
+    $native = Get-StorageAclNative ([string]$request.cache) ([string]$request.action -ne 'check')
+    $reply = $native::Execute([string]$request.action, [string]$request.path, [string]$request.root)
     [Console]::WriteLine(($reply | ConvertTo-Json -Depth 5 -Compress))
     exit 0
 } catch {

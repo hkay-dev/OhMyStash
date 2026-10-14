@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -121,9 +122,10 @@ test("batch scopes keep grants only for the synchronous callback and revalidate 
     platform: "win32",
     native: (action, path) => {
       calls.push(action);
+      // The first scope over a root prepares it, which returns the same snapshot as a tree.
       return {
         ok: true,
-        records: action === "tree" ? [nativeRecord(root), nativeRecord(file), nativeRecord(other)] :
+        records: action === "tree" || action === "prepare" ? [nativeRecord(root), nativeRecord(file), nativeRecord(other)] :
           [nativeRecord(path, !shared)],
       };
     },
@@ -139,10 +141,55 @@ test("batch scopes keep grants only for the synchronous callback and revalidate 
     permissions.preparePrivateStorageDirectory(root);
     expect(permissions.hasPrivateStoragePermissions(other, changedStats(lstatSync(file), {}))).toBe(false);
   });
-  expect(calls).toEqual(["tree"]);
+  expect(calls).toEqual(["prepare"]);
   shared = true;
   expect(permissions.hasPrivateStoragePermissions(file, lstatSync(file))).toBe(false);
-  expect(calls).toEqual(["tree", "check"]);
+  expect(calls).toEqual(["prepare", "check"]);
+});
+
+test("one scope costs one helper launch: nested scopes reuse it and its own new files need no check", () => {
+  const { root, file } = fixture("one-launch-scope");
+  const sub = join(root, "attachments");
+  mkdirSync(sub);
+  const calls: string[] = [];
+  const permissions = createStoragePermissions({
+    platform: "win32",
+    native: (action, path) => {
+      calls.push(action);
+      return {
+        ok: true,
+        records: action === "check" ? [nativeRecord(path)] : [nativeRecord(root), nativeRecord(file), nativeRecord(sub)],
+      };
+    },
+  });
+  const published = join(root, "published.json");
+  const linked = join(root, "linked.json");
+  permissions.withPrivateStoragePermissions(root, () => {
+    permissions.withPrivateStoragePermissions(root, () => permissions.preparePrivateStorageDirectory(root));
+    permissions.withPrivateStoragePermissions(sub, () => permissions.preparePrivateStorageDirectory(sub));
+    // A temp this process created, published under its final name.
+    writeFileSync(`${published}.tmp`, "new stash", { flag: "wx" });
+    renameSync(`${published}.tmp`, published);
+    permissions.trustCreatedFile(published);
+    expect(permissions.hasPrivateStoragePermissions(published, lstatSync(published))).toBe(true);
+    // A replacement renamed over a snapshot file drops its old grant for the new one.
+    writeFileSync(`${file}.tmp`, "edited stash", { flag: "wx" });
+    renameSync(`${file}.tmp`, file);
+    permissions.trustCreatedFile(file);
+    expect(permissions.hasPrivateStoragePermissions(file, lstatSync(file))).toBe(true);
+    expect(calls).toEqual(["prepare"]);
+    // A file with another name elsewhere isn't one this process just created, so the helper checks it.
+    writeFileSync(linked, "linked stash");
+    linkSync(linked, join(sub, "alias.json"));
+    permissions.trustCreatedFile(linked);
+    expect(permissions.hasPrivateStoragePermissions(linked, lstatSync(linked))).toBe(true);
+    expect(calls).toEqual(["prepare", "check"]);
+  });
+  // Grants end with the scope, and the next scope over the prepared root only reads the tree.
+  permissions.trustCreatedFile(published);
+  expect(permissions.hasPrivateStoragePermissions(published, lstatSync(published))).toBe(true);
+  permissions.withPrivateStoragePermissions(root, () => {});
+  expect(calls).toEqual(["prepare", "check", "check", "tree"]);
 });
 
 test("scopes reject changed file revisions, missing files, and asynchronous callbacks", () => {
@@ -152,7 +199,10 @@ test("scopes reject changed file revisions, missing files, and asynchronous call
     platform: "win32",
     native: (action, path) => {
       calls.push(action);
-      return { ok: true, records: action === "tree" ? [nativeRecord(root), nativeRecord(file)] : [nativeRecord(path)] };
+      return {
+        ok: true,
+        records: action === "tree" || action === "prepare" ? [nativeRecord(root), nativeRecord(file)] : [nativeRecord(path)],
+      };
     },
   });
   permissions.withPrivateStoragePermissions(root, () => {
@@ -161,10 +211,10 @@ test("scopes reject changed file revisions, missing files, and asynchronous call
   });
   expect(() => permissions.withPrivateStoragePermissions(root, () => Promise.resolve())).toThrow("synchronous");
   expect(permissions.hasPrivateStoragePermissions(file, lstatSync(file))).toBe(true);
-  expect(calls).toEqual(["tree", "tree", "check"]);
+  expect(calls).toEqual(["prepare", "tree", "check"]);
   expect(() => permissions.withPrivateStoragePermissions(root, () => { throw new Error("callback failed"); })).toThrow("callback failed");
   expect(permissions.hasPrivateStoragePermissions(file, lstatSync(file))).toBe(true);
-  expect(calls).toEqual(["tree", "tree", "check", "tree", "check"]);
+  expect(calls).toEqual(["prepare", "tree", "check", "tree", "check"]);
 });
 
 test("prepared root identities prevent ACL changes from triggering another migration", () => {
@@ -195,7 +245,7 @@ test("Windows no-follow checks reject a target fstat passed for a linked path on
     }) : lstatSync(path),
     native: (action) => {
       nativeCalls += 1;
-      if (action !== "tree") throw new Error("Linked paths must not reach native validation");
+      if (action !== "tree" && action !== "prepare") throw new Error("Linked paths must not reach native validation");
       return { ok: true, records: [nativeRecord(root), { path: alias, safe: false }] };
     },
   });
@@ -237,7 +287,7 @@ test("a scoped hardlink spelling cannot borrow a case-distinct sibling's root id
     expect(permissions.hasPrivateStoragePermissions(aliasFile, leafStat)).toBe(false);
     expect(permissions.hasPrivateStoragePermissions(join(aliasRoot, "unknown.json"), leafStat)).toBe(false);
   });
-  expect(calls).toEqual(["tree"]);
+  expect(calls).toEqual(["prepare"]);
 });
 
 test("new scoped paths require fresh ACL checks and intact snapshot ancestors", () => {
@@ -656,3 +706,18 @@ test("a scoped directory replacement cannot reuse the old directory's ACL grant"
     expect(() => permissions.preparePrivateStorageDirectory(root)).toThrow();
   });
 });
+
+windowsTest("Windows caches the compiled ACL helper in the private directory and keeps using it", () => {
+  const { root, file } = fixture("helper-cache");
+  const permissions = createStoragePermissions();
+  permissions.preparePrivateStorageDirectory(root);
+  permissions.withPrivateStoragePermissions(root, () => {});
+  const cached = readdirSync(root).filter((name) => /^\.storage-permissions-[0-9a-f]{64}\.dll$/.test(name));
+  expect(cached).toHaveLength(1);
+  // A fresh process loads the cached helper, and its checks still work.
+  const again = createStoragePermissions();
+  again.withPrivateStoragePermissions(root, () => {
+    expect(again.hasPrivateStoragePermissions(file, lstatSync(file))).toBe(true);
+  });
+  expect(readdirSync(root).filter((name) => name.startsWith(".storage-permissions-"))).toEqual(cached);
+}, 60_000);
