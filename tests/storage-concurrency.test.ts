@@ -286,8 +286,9 @@ test("converts an orphaned edit into one conflict copy however often it is loade
     { mode: 0o600 },
   );
   abandon(original.tempPath);
-  // A second name keeps the orphan's file, so it can come back as if its release had failed.
-  const unreleased = join(agentDir, "unreleased-orphan");
+  // A second name keeps the orphan's file, so it can come back as if its release had failed. It
+  // stays inside the store: on Windows a hard link outside it makes OMS distrust the file.
+  const unreleased = join(stashDir, "unreleased-link");
   linkSync(original.tempPath, unreleased);
 
   await browse(sessionId, [ESCAPE]);
@@ -313,7 +314,7 @@ test("publishes a conflict copy that a crash left unpublished, then frees its st
     { mode: 0o600 },
   );
   abandon(original.tempPath);
-  const unreleased = join(agentDir, "unreleased-orphan");
+  const unreleased = join(stashDir, "unreleased-link");
   linkSync(original.tempPath, unreleased);
   await browse(sessionId, [ESCAPE]);
   // Rebuild what a crash between writing the copy's temp and publishing it leaves behind.

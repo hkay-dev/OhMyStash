@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.12.0 - 2026-10-13
+
+### Added
+
+- Press `p` in the browser to pop the selected stash: OMS restores it and then deletes it, unless it's locked.
+- `@hkay-dev/ohmystash/ui`: `selectOption` takes `{ icons, selected }`, `ListOptions.icons` turns off the search glyph, and `ShortcutHintDeclaration` has an optional `command`, the slash command to show when a hint has no key. OhMyStash's browser hint declares `/stash`.
+- Attachments count toward their own 1 GiB storage limit.
+
+### Changed
+
+- Stashing a draft that matches this chat's newest stash (same text, mode, and attachments) updates that stash instead of adding a copy.
+- Retention counts from a stash's last restore or repeat stash, not only from when it was first saved.
+- While you search in the browser, every printable key, `q` and `Q` included, types into the search. Press `Tab` to keep the filter and use the action keys again.
+- `createList` and `showList`: printable keys always go to the search field while it has focus, and action keys do nothing while an async action is still running.
+- The browser reopens on the stash you acted on, or on the same row once that stash is gone.
+- Storage errors show the full path and the command that fixes it. The warning about stashes left out of the browser says why each one was left out.
+- Requires OMP 18.10.4 or newer.
+
+### Fixed
+
+- Windows: the permission helper compiles its checks once and keeps them in the stash folder, and each action launches it once instead of two or three times.
+- Deleting or expiring stashes also removes attachments nothing refers to anymore, stale attachment temps, and set-aside files older than a week.
+- Saving an attachment whose stored copy is damaged rewrites the copy from the good bytes. Restoring a stash with a damaged attachment brings back the text and the attachments that still check out, and names the ones that don't.
+- An unreadable stash file is renamed to `.invalid` once, so it stops counting toward the limit and the warning doesn't come back every time.
+- When a stash changed in another session, the browser says so and reloads instead of failing.
+- Subagent sessions no longer run OhMyStash's session work or reset its settings.
+- Previews with a few non-ASCII lines are faster: only those lines are split into characters.
+- Without an `id` option, the shared list finds the selected item again by its search text when `items()` builds new objects.
+
+### Development
+
+- Pin the 18.10.4 SDK packages and Bun 1.4.3.
+- Move the release steps to `docs/releasing.md` and the UI reference to `docs/ui.md`. Neither ships in the install archive.
+- Test repeat stashes, pop, retention, attachment cleanup and limits, damaged attachments, subagent sessions, typing into the browser search one key at a time, reselection and conflict reloads, storage error messages, and the cached Windows helper.
+
 ## 1.11.0 - 2026-10-13
 
 ### Added
