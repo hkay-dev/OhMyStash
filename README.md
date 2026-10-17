@@ -6,6 +6,8 @@
 
 I'm proud to present OhMyStash! OMS stores unfinished OhMyPi prompts without submitting them. It preserves normal and `/queue` drafts, images, collapsed large pastes, timestamps, source-chat metadata, locks, and a whole lot more!
 
+> **Validation note:** The new permission-worker changes were tested on Windows. Native macOS testing is still needed for this update. Simulated POSIX checks do not establish native Mac compatibility.
+
 ![OhMyStash browser populated with prompts from several chats](assets/ohmystash-browser.png)
 
 I had a ton of fun making this, and I hope you find it just as useful as I do!
@@ -211,7 +213,29 @@ Cross-chat benchmark medians:
 | Stacked render | 0.015 ms | 0.018 ms |
 | Compact render | 0.005 ms | 0.007 ms |
 
-On Windows, OMS checks folder and file permissions with a small PowerShell helper. Each stash, restore, or browser action costs one helper launch, and the helper compiles its checks once and reuses them.
+### Optional Windows permission worker
+
+The Windows worker keeps one helper running per OMP session instead of launching PowerShell for each storage action. It reuses the existing ACL validator on every request; it doesn't cache permission grants or disable file fsync. The pipe is private to your Windows account and verifies both endpoint process IDs.
+
+From this checkout or the installed plugin directory, build the optional worker with PowerShell 7:
+
+```powershell
+pwsh -NoProfile -File ./extensions/build-storage-worker.ps1
+```
+
+From a checkout, `bun run build:windows` runs the same command. The build needs the Windows .NET Framework C# compiler. Start a new OMP session after building. Generated files aren't committed, and the builder refuses to overwrite an existing executable. Stop OMP and move the old generated worker aside before rebuilding.
+
+Without a built worker, OMS retains its existing PowerShell helper. Set `OMS_ACL_TRANSPORT=oneshot` before starting OMP to select that route even when a worker is present.
+
+The Windows-tested local prototype measured warm saves at 5.68-5.79 ms and restores at 3.03-4.68 ms for small synthetic normal and queue prompts. An immediate first save before background warmup completed took 80.26 ms. Those measurements used OMP 18.11.3 and a local OhMyStash 1.11.0 prototype, not a benchmark of every workload or physical key presses on this newer branch.
+
+**Windows tested; native macOS validation still pending for these changes.** The worker only runs on Windows. The POSIX permission path is unchanged, but simulated Darwin tests aren't native Mac testing.
+
+After installing development dependencies and building the worker, its focused Windows checks are:
+
+```sh
+bun test tests/storage-worker.test.ts tests/storage-permissions.test.ts
+```
 
 ## Storage and limits
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Windows performance
+
+- Add an optional persistent Windows permission worker with a private per-OMP named pipe, owner-only access, client/server PID checks, bounded I/O, and shutdown/parent-exit cleanup. Every request still runs the existing ACL validator, and file fsync remains enabled.
+- Build the worker with `bun run build:windows` on Windows. Generated executable/source files aren't committed. Unbuilt installs retain the existing PowerShell route; `OMS_ACL_TRANSPORT=oneshot` also selects that route.
+- Tested on Windows. Native macOS testing is still needed for this update; simulated POSIX tests aren't a replacement. The Windows worker is platform-gated, and the existing POSIX permission path is unchanged.
+- Add Windows regression coverage for unsafe paths, external hard links, foreign pipe clients, large replies, worker reuse/restart, missing-worker errors, and parent-exit cleanup.
+
 ## 1.12.0 - 2026-10-13
 
 ### Added

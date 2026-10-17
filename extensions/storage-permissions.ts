@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, type Stats } from "node:fs";
+import { existsSync, lstatSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createWindowsAclTransport } from "./storage-acl-transport.mjs";
 
 interface NativeRecord {
   path: string;
@@ -39,8 +40,18 @@ interface PermissionScope {
 }
 
 const helperPath = fileURLToPath(new URL("./storage-permissions.ps1", import.meta.url));
+const workerPath = fileURLToPath(new URL("./storage-acl-worker.exe", import.meta.url));
+const workerTransport = createWindowsAclTransport(workerPath);
 
-function queryNative(action: NativeAction, path: string, root?: string): NativeReply {
+export function warmStoragePermissions(): void {
+  if (process.platform === "win32" && process.env.OMS_ACL_TRANSPORT !== "oneshot" && existsSync(workerPath)) workerTransport.warm();
+}
+
+export function stopStoragePermissions(): void {
+  workerTransport.stop();
+}
+
+function queryPowerShell(action: NativeAction, path: string, root?: string): NativeReply {
   const systemRoot = process.env.SystemRoot;
   if (!systemRoot || !isAbsolute(systemRoot)) throw new Error("Windows ACL helper is unavailable");
   const command = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
@@ -66,6 +77,21 @@ function queryNative(action: NativeAction, path: string, root?: string): NativeR
   );
   if (result.error || result.status !== 0) throw new Error("Windows ACL validation failed");
   const reply: unknown = JSON.parse(result.stdout.replace(/^\uFEFF/, ""));
+  if (
+    !reply || typeof reply !== "object" || !("ok" in reply) || reply.ok !== true ||
+    !("records" in reply) || !Array.isArray(reply.records)
+  ) {
+    throw new Error("Windows ACL validation failed");
+  }
+  return reply as NativeReply;
+}
+
+function queryNative(action: NativeAction, path: string, root?: string): NativeReply {
+  // An unbuilt installation keeps the existing checked PowerShell route.
+  if (process.platform !== "win32" || process.env.OMS_ACL_TRANSPORT === "oneshot" || !existsSync(workerPath)) {
+    return queryPowerShell(action, path, root);
+  }
+  const reply: unknown = workerTransport.request({ action, path, root });
   if (
     !reply || typeof reply !== "object" || !("ok" in reply) || reply.ok !== true ||
     !("records" in reply) || !Array.isArray(reply.records)

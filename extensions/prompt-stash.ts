@@ -49,6 +49,8 @@ import {
   preparePrivateStorageDirectory,
   trustCreatedFile,
   withPrivateStoragePermissions,
+  warmStoragePermissions,
+  stopStoragePermissions,
 } from "./storage-permissions";
 
 type InputMode = "normal" | "queue";
@@ -2939,11 +2941,15 @@ export default async function promptStash(pi: ExtensionAPI): Promise<void> {
     if (!isMainTui(ctx)) return;
     pluginConfig = await loadPluginConfig(ctx.cwd);
     installEditorBridge(ctx);
+    warmStoragePermissions();
     if (pluginConfig.retentionDays > 0) {
       await run(ctx, async () => {
         loadEntries();
       });
     }
+  });
+  pi.on("session_shutdown", (_event, ctx) => {
+    if (isMainTui(ctx)) stopStoragePermissions();
   });
 
   if (config.stashShortcut !== "none") {

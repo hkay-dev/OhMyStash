@@ -2,3 +2,5 @@ node_modules/
 artifacts/
 .DS_Store
 *.cast
+/extensions/storage-acl-worker.cs
+/extensions/storage-acl-worker.exe

@@ -708,16 +708,23 @@ test("a scoped directory replacement cannot reuse the old directory's ACL grant"
 });
 
 windowsTest("Windows caches the compiled ACL helper in the private directory and keeps using it", () => {
-  const { root, file } = fixture("helper-cache");
-  const permissions = createStoragePermissions();
-  permissions.preparePrivateStorageDirectory(root);
-  permissions.withPrivateStoragePermissions(root, () => {});
-  const cached = readdirSync(root).filter((name) => /^\.storage-permissions-[0-9a-f]{64}\.dll$/.test(name));
-  expect(cached).toHaveLength(1);
-  // A fresh process loads the cached helper, and its checks still work.
-  const again = createStoragePermissions();
-  again.withPrivateStoragePermissions(root, () => {
-    expect(again.hasPrivateStoragePermissions(file, lstatSync(file))).toBe(true);
-  });
-  expect(readdirSync(root).filter((name) => name.startsWith(".storage-permissions-"))).toEqual(cached);
+  const previous = process.env.OMS_ACL_TRANSPORT;
+  process.env.OMS_ACL_TRANSPORT = "oneshot";
+  try {
+    const { root, file } = fixture("helper-cache");
+    const permissions = createStoragePermissions();
+    permissions.preparePrivateStorageDirectory(root);
+    permissions.withPrivateStoragePermissions(root, () => {});
+    const cached = readdirSync(root).filter((name) => /^\.storage-permissions-[0-9a-f]{64}\.dll$/.test(name));
+    expect(cached).toHaveLength(1);
+    // A fresh process loads the cached helper, and its checks still work.
+    const again = createStoragePermissions();
+    again.withPrivateStoragePermissions(root, () => {
+      expect(again.hasPrivateStoragePermissions(file, lstatSync(file))).toBe(true);
+    });
+    expect(readdirSync(root).filter((name) => name.startsWith(".storage-permissions-"))).toEqual(cached);
+  } finally {
+    if (previous === undefined) delete process.env.OMS_ACL_TRANSPORT;
+    else process.env.OMS_ACL_TRANSPORT = previous;
+  }
 }, 60_000);
