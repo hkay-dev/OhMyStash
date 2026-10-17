@@ -6,15 +6,13 @@
 
 I'm proud to present OhMyStash! OMS stores unfinished OhMyPi prompts without submitting them. It preserves normal and `/queue` drafts, images, collapsed large pastes, timestamps, source-chat metadata, locks, and a whole lot more!
 
-> **Validation note:** The new permission-worker changes were tested on Windows. Native macOS testing is still needed for this update. Simulated POSIX checks do not establish native Mac compatibility.
-
 ![OhMyStash browser populated with prompts from several chats](assets/ohmystash-browser.png)
 
 I had a ton of fun making this, and I hope you find it just as useful as I do!
 
 ## Install
 
-You need OMP 18.10.4 or newer. OMP's plugin manager installs packages with Bun, so `bun` has to be on your PATH. On macOS:
+You need OMP 18.12.1 or newer. OMP's plugin manager installs packages with Bun, so `bun` has to be on your PATH. On macOS:
 
 ```sh
 brew install bun
@@ -28,7 +26,7 @@ Install directly from GitHub:
 omp plugin install github:hkay-dev/OhMyStash
 ```
 
-OMP installs the standard SDK dependencies for you, so there's no custom OMP build or separate installer. To pin this release, use `github:hkay-dev/OhMyStash#v1.12.0` instead.
+OMP installs the standard SDK dependencies for you, so there's no custom OMP build or separate installer. To pin this release, use `github:hkay-dev/OhMyStash#v1.13.0` instead.
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
@@ -229,7 +227,7 @@ Without a built worker, OMS retains its existing PowerShell helper. Set `OMS_ACL
 
 The Windows-tested local prototype measured warm saves at 5.68-5.79 ms and restores at 3.03-4.68 ms for small synthetic normal and queue prompts. An immediate first save before background warmup completed took 80.26 ms. Those measurements used OMP 18.11.3 and a local OhMyStash 1.11.0 prototype, not a benchmark of every workload or physical key presses on this newer branch.
 
-**Windows tested; native macOS validation still pending for these changes.** The worker only runs on Windows. The POSIX permission path is unchanged, but simulated Darwin tests aren't native Mac testing.
+The worker only runs on Windows, and the POSIX permission path is unchanged. Version 1.13.0 was tested on Windows and on macOS.
 
 After installing development dependencies and building the worker, its focused Windows checks are:
 
@@ -319,7 +317,7 @@ OhMyStash attaches to the composer when a session starts. Restart OMP after inst
 
 ## Development
 
-Use Bun 1.4.3. Development dependencies pin the official SDK packages to 18.10.4, with `^18.10.4` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
+Use Bun 1.4.3. Development dependencies pin the official SDK packages to 18.12.1, with `^18.12.1` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
