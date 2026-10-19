@@ -83,7 +83,7 @@ async function useSettings(settings: Record<string, unknown>): Promise<void> {
   } as unknown as ExtensionContext);
 }
 
-// Opens the browser for one chat, sends keys to the first view, and closes every later view.
+// Opens the browser, filters the first view to one chat, sends keys to it, and closes every later view.
 async function browse(
   sessionId: string,
   keys: string[],
@@ -105,6 +105,7 @@ async function browse(
           undefined,
           resolve,
         );
+        if (frames.length === 0) component.handleInput("g");
         frames.push(component.render(120).join("\n"));
         for (const key of frames.length === 1 ? keys : [ESCAPE]) component.handleInput(key);
         return promise;

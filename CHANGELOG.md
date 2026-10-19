@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.14.0 - 2026-10-19
+
+### Why
+
+It's easy to start typing a prompt in the wrong chat. Moving it used to take `Alt+S` to stash it, then `Alt+Shift+S` in the right chat, and then `g`, because the browser opened on the current chat, where that stash isn't. The browser now opens on every chat, so the prompt that you just stashed is the first row and `Enter` restores it.
+
+### Changed
+
+- The stash browser (`Alt+Shift+S` and `/stash`) opens on stashes from every chat. Press `g` to filter to the current chat, and again to go back. After an action, the browser still reopens on the scope that you left it on.
+- `Alt+S` and `/stash restore` don't change. They still stash and restore only in the current chat.
+- `Shift+D` on the default view now clears unlocked stashes across all chats. Its confirmation says so, and locked stashes are still protected. Press `g` first to clear only the current chat.
+- Quota and empty-chat notices no longer tell you to press `g`, because the browser already shows every chat.
+
+### Tested
+
+- The TypeScript check and the full test suite pass, with the scope tests updated for the new default.
+- On macOS with stock OMP 18.12.2, the packed 1.14.0 plugin, installed and loaded through OMP's plugin loader, stashed and restored with `Alt+S`, opened the browser on All chats with `Alt+Shift+S`, and restored with `Enter`. The release check now waits for All chats, and it fails against 1.13.0.
+- A capture with 12 stashes from other chats showed the browser opening on All chats, `g` switching to This chat, and `g` switching back.
+
 ## 1.13.0 - 2026-10-17
 
 ### Windows performance

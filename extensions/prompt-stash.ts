@@ -186,9 +186,9 @@ const ACTIVE_TEMP_MS = 60 * 1000;
 // Torn writes set aside as .orphan stay for inspection this long, then garbage collection deletes them.
 const ORPHAN_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const QUOTA_ERROR =
-  "OMS storage quota reached across all chats. Open the stash browser and press g to manage it";
+  "OMS storage quota reached across all chats. Open the stash browser to manage it";
 const ATTACHMENT_QUOTA_ERROR =
-  "OMS attachment storage is full (1 GiB across all chats). Open the stash browser, press g, and delete stashes with images or large pastes";
+  "OMS attachment storage is full (1 GiB across all chats). Open the stash browser and delete stashes with images or large pastes";
 const ENTRY_CACHE = new Map<string, CachedEntry>();
 const LOCAL_TIMESTAMP_FORMATTERS = {
   "12-hour": new Intl.DateTimeFormat(undefined, {
@@ -2742,7 +2742,7 @@ async function restoreLatest(ctx: ExtensionContext, requestedMode?: InputMode): 
   if (!entry) {
     const label = mode === "queue" ? "No stashed queue prompts in this chat" : "No stashed prompts in this chat";
     const elsewhere = entries.length > 0
-      ? ` ${entries.length} ${entries.length === 1 ? "stash is" : "stashes are"} available in other chats. Open the browser and press g`
+      ? ` ${entries.length} ${entries.length === 1 ? "stash is" : "stashes are"} available in other chats. Open the browser to pick one`
       : "";
     ctx.ui.notify(`${label}.${elsewhere}`, "info");
     return;
@@ -2775,7 +2775,7 @@ async function browse(ctx: ExtensionContext): Promise<void> {
   // The mounted browser owns input, so release after this turn; a browser that another
   // dialog displaced then stays reopenable.
   queueMicrotask(() => OPENING_BROWSERS.delete(ctx.ui));
-  let state: BrowserState = { query: "", scope: "current", selectedIndex: 0 };
+  let state: BrowserState = { query: "", scope: "all", selectedIndex: 0 };
   let entries = readStore(() => loadEntriesForUi(ctx));
   while (true) {
     if (entries.length === 0) {
@@ -2961,7 +2961,7 @@ export default async function promptStash(pi: ExtensionAPI): Promise<void> {
 
   if (config.browserShortcut !== "none") {
     pi.registerShortcut(config.browserShortcut as KeyId, {
-      description: "Browse this chat's stashes, with every chat one key away",
+      description: "Browse every chat's stashes, with this chat one key away",
       handler: async (ctx) => run(ctx, () => browse(ctx)),
     });
   }

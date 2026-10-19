@@ -198,6 +198,7 @@ export default defineVideo(
     await t.ctrl("k");
     await t.alt("S");
     await t.wait(/OhMyStash/, { scope: "screen" });
+    await t.wait(/All chats/, { scope: "screen" });
     await t.wait(draft, { scope: "screen" });
     await t.sleep("800ms");
     await t.snapshot(join(outputDir, "ohmystash-release-shortcuts.png"));
@@ -234,7 +235,7 @@ export default defineVideo(
       "compiled installed OMP loaded the registered packaged extension",
       "Alt+S saved the synthetic draft under the isolated agent root",
       "Alt+S restored the latest draft",
-      "Alt+Shift+S opened the browser and Enter restored its selection",
+      "Alt+Shift+S opened the browser on All chats and Enter restored its selection",
       "restore retained the one synthetic stash",
       "the packaged plugin settings were visible",
       "OMP exited with status 0",

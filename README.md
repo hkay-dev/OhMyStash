@@ -54,7 +54,7 @@ Press `Alt+S` on an empty composer to restore the newest stash from the current 
 
 ### `Alt+Shift+S`: open the browser
 
-Press `Alt+Shift+S` to open the full stash browser. The browser supports preview, search, chat scope, queue actions, editing, locking, and deletion.
+Press `Alt+Shift+S` to open the full stash browser. It opens on stashes from every chat, so a prompt that you started in the wrong chat is right there to restore. The browser supports preview, search, chat scope, queue actions, editing, locking, and deletion.
 
 The browser opens in OMP's stock bottom overlay, like the built-in Switch Model dialog, with square accent-colored borders and the title in the top border. Your draft, caret, undo history, and attachments stay as they were. The contextual Nerd Font glyphs follow **Show icons** and don't touch OMP's global symbol preset. You need a Nerd Font, or a symbols fallback, to see them.
 
@@ -62,7 +62,7 @@ The browser opens in OMP's stock bottom overlay, like the built-in Switch Model 
 
 You can do quite a bit more in the browser:
 
-- **Chat scope.** Open stashes from the current chat and press `g` to switch to all chats.
+- **Chat scope.** Open stashes from every chat and press `g` to filter to the current chat.
 - **Source metadata.** Global entries show the source chat, workspace, timestamp, and short session ID.
 - **Search.** Filter prompt text, chat names, workspaces, timestamps, queue mode, locks, and attachments.
 - **Queue draft.** Press `q` to place the selected stash in the composer as an editable `/queue` draft.
@@ -77,9 +77,9 @@ After an action, the browser reopens on the stash you were on, or on the same ro
 
 ## More Features!
 
-### Current chat and all chats
+### All chats and current chat
 
-The browser starts on the current chat. Pressing `g` switches to all chats, back to the current chat, and back to all chats again.
+The browser starts on all chats. Pressing `g` switches to the current chat, back to all chats, and back to the current chat again. After an action, the browser reopens on the scope that you left it on.
 
 ![OhMyStash chat scope switching](assets/ohmystash-browser.gif)
 
@@ -129,7 +129,7 @@ Locked stashes remain protected during bulk deletion.
 | Open the stash browser | `Alt+Shift+S` |
 | Open the browser from the composer | `/stash` |
 | Restore the newest stash from this chat | `/stash restore` |
-| Switch between This chat and All chats | `g` |
+| Switch between All chats and This chat | `g` |
 | Start search | `/` |
 | Leave the search, keep its filter, and use the letter keys | `Tab` |
 | Restore the selected stash | `Enter` |
@@ -300,8 +300,8 @@ The file is valid JSON, but this version doesn't understand it, so OMS leaves it
 **`5 older OMS stashes are hidden because the store is over its limit of 256 stashes or 16 MiB. Delete stashes you don't need to bring them back`**
 The browser shows the newest stashes that fit. Delete or pop stashes you no longer need and the older ones come back.
 
-**`OMS storage quota reached across all chats. Open the stash browser and press g to manage it`**
-A new stash would go over the 256-stash or 16 MiB limit. Press `g` in the browser to see every chat's stashes and delete the ones you don't need. Locked stashes count too.
+**`OMS storage quota reached across all chats. Open the stash browser to manage it`**
+A new stash would go over the 256-stash or 16 MiB limit. The browser opens on every chat's stashes, so delete the ones you don't need there. Locked stashes count too.
 
 **`OMS attachment storage is full (1 GiB across all chats). ...`**
 Your stashed images and large pastes add up to 1 GiB. OMS already cleaned up unused attachments before saying this, so delete stashes that carry big attachments. Stashes without new attachments still save.

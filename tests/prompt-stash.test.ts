@@ -928,7 +928,12 @@ test("counts a cached stash once when its recovery file is also present", async 
       custom(factory: Function) {
         const { promise, resolve } = Promise.withResolvers<unknown>();
         const component = browserComponent(factory, resolve);
-        component.handleInput(requestDelete ? "D" : "\u001b");
+        if (requestDelete) {
+          component.handleInput("g");
+          component.handleInput("D");
+        } else {
+          component.handleInput("\u001b");
+        }
         requestDelete = false;
         return promise;
       },
@@ -1251,7 +1256,7 @@ test("preserves concurrent edits that begin from one recoverable temp", async ()
   }
 });
 
-test("defaults to this chat and exposes labeled global stashes without losing search state", async () => {
+test("opens on labeled stashes from every chat and filters to this chat without losing search state", async () => {
   const otherSessionId = randomUUID();
   const otherOrigin = {
     sessionId: otherSessionId,
@@ -1280,16 +1285,15 @@ test("defaults to this chat and exposes labeled global stashes without losing se
       custom(factory: Function) {
         const { promise, resolve } = Promise.withResolvers<unknown>();
         const component = browserComponent(factory, resolve, { rows: 60, write: () => {} });
-        currentFrame = component.render(120).join("\n");
-        component.handleInput("g");
         allFrame = component.render(120).join("\n");
+        component.handleInput("g");
+        currentFrame = component.render(120).join("\n");
         component.handleInput("/");
         for (const character of "other-workspace") component.handleInput(character);
-        globalSearchFrame = component.render(120).join("\n");
+        currentSearchFrame = component.render(120).join("\n");
         component.handleInput("\t");
         component.handleInput("g");
-        currentSearchFrame = component.render(120).join("\n");
-        component.handleInput("g");
+        globalSearchFrame = component.render(120).join("\n");
         component.handleInput("\u001b");
         component.handleInput("/");
         for (const character of "legacy scope prompt") component.handleInput(character);
@@ -1434,6 +1438,7 @@ test("keeps an empty current scope open and bulk-deletes only that scope", async
         const { promise, resolve } = Promise.withResolvers<unknown>();
         const component = browserComponent(factory, resolve, { rows: 60, write: () => {} });
         if (browserCalls === 0) {
+          component.handleInput("g");
           component.handleInput("D");
         } else {
           emptyFrame = component.render(120).join("\n");
@@ -1506,7 +1511,7 @@ test("keeps a stash another session changed, says so, and reopens the browser on
     expect(readFileSync(fixture.path, "utf8")).toContain("concurrent replacement");
     expect(notifications).toEqual(["That stash changed in another session, so OMS reloaded the browser"]);
     expect(frames).toHaveLength(2);
-    expect(frames[1]?.split("\n").find((line) => line.includes(" > "))).toContain("concurrent replacement");
+    expect(frames[1]?.split("\n").find((line) => line.includes(" > "))).toContain("concurrent replace");
   } finally {
     rmSync(fixture.path, { force: true });
   }

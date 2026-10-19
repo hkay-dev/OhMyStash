@@ -140,7 +140,7 @@ test("fits every browser layout, its title, and its search row in OMP's bottom o
               const component = browser(factory, rows);
               for (const key of [...scopeKeys, "/", ...query, "\t"]) component.handleInput(key);
               const lines = component.render(width);
-              const label = `${layout} ${width}x${rows} ${scopeKeys.length > 0 ? "all chats" : "this chat"} /${query}`;
+              const label = `${layout} ${width}x${rows} ${scopeKeys.length > 0 ? "this chat" : "all chats"} /${query}`;
               // The overlay gets every terminal row; OMP drops taller output from the top, title first.
               if (lines.length > rows) failures.push(`${label}: ${lines.length} rows for ${rows}`);
               if (lines.some((line) => visibleWidth(line) > width)) failures.push(`${label}: wider than ${width}`);
@@ -165,7 +165,9 @@ test("clips compact empty-chat notices to narrow terminals", async () => {
     await useLayout("Compact");
     const factory = await openBrowser(randomUUID());
     for (const width of [1, 10, 16]) {
-      for (const line of browser(factory, 12).render(width)) {
+      const component = browser(factory, 12);
+      component.handleInput("g");
+      for (const line of component.render(width)) {
         expect(visibleWidth(line)).toBeLessThanOrEqual(width);
       }
     }

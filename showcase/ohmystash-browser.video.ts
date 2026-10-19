@@ -225,9 +225,6 @@ export default defineVideo(
     const openAllChats = async () => {
       await t.type("/stash");
       await t.enter();
-      await t.wait(/No stashes in this chat/, { scope: "screen" });
-      await t.sleep("900ms");
-      await t.type("g");
       await t.wait(/All chats · 1 of 12/, { scope: "screen" });
       await t.sleep("1.2s");
     };
