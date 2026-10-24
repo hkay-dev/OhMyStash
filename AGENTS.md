@@ -13,3 +13,9 @@ OhMyStash (OMS, `@hkay-dev/ohmystash`) is an Oh My Pi plugin that stores unfinis
 - Install: `omp plugin install github:hkay-dev/OhMyStash`; the README has the details. Harsha's installed copy lives under `~/.omp/plugins/local-builds/`.
 - Release steps, the packed-file check and the installed-runtime proof are in `docs/releasing.md`.
 - `docs/ui.md` and `docs/send-targets.md` describe the shared UI and send-target exports.
+
+## Docs and bugs
+
+Docs: docs
+Bugs: kata project ohmystash
+Visibility: public

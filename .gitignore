@@ -4,3 +4,4 @@ artifacts/
 *.cast
 /extensions/storage-acl-worker.cs
 /extensions/storage-acl-worker.exe
+.kata.local.toml
