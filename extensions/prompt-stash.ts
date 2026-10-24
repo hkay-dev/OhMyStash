@@ -42,7 +42,8 @@ import {
   type TUI,
 } from "@oh-my-pi/pi-tui";
 import { SYMBOL_PRESETS } from "@oh-my-pi/pi-tui/theme/symbols";
-import { createFrame, extensionIcon, fitToWidth, OVERLAY_OPTIONS } from "./ui";
+import { createFrame, extensionIcon, fitToWidth, OVERLAY_OPTIONS, selectOption } from "./ui";
+import { collectSendTargets, type SendTarget } from "./send-targets";
 import {
   hasPrivateStoragePermissions,
   invalidatePrivateStoragePermission,
@@ -132,6 +133,7 @@ type BrowserAction =
   | ({ type: "pop"; entry: StashEntry } & BrowserState)
   | ({ type: "queue"; entry: StashEntry } & BrowserState)
   | ({ type: "submit-queue"; entry: StashEntry } & BrowserState)
+  | ({ type: "send"; entry: StashEntry; targets: SendTarget[] } & BrowserState)
   | ({ type: "toggle-lock"; entry: StashEntry } & BrowserState)
   | ({ type: "edit"; entry: StashEntry; tui: TUI } & BrowserState)
   | ({ type: "delete"; entry: StashEntry } & BrowserState)
@@ -229,6 +231,8 @@ const DEFAULT_CONFIG: PromptStashConfig = {
 // The main TUI session's settings. Subagents load this module too, so only the main session's
 // session_start writes them.
 let pluginConfig = { ...DEFAULT_CONFIG };
+// The main session's event bus, where other plugins offer places to send a stash.
+let sendTargetEvents: ExtensionAPI["events"] | undefined;
 const ACTIVE_EDITORS = new WeakMap<object, CustomEditor>();
 
 class EntryConflictError extends Error {}
@@ -2101,6 +2105,7 @@ function showBrowser(
   ctx: ExtensionContext,
   entries: StashEntry[],
   initial: BrowserState,
+  targets: SendTarget[],
 ): Promise<BrowserAction> {
   return ctx.ui.custom<BrowserAction>(
     (tui, theme, _keybindings, done) => {
@@ -2259,6 +2264,9 @@ function showBrowser(
             finishSelected("queue");
           } else if (key === "Q") {
             finishSelected("submit-queue");
+          } else if (key === "s" && targets.length > 0) {
+            const entry = selectedEntry();
+            if (entry) done({ type: "send", entry, targets, ...browserState() });
           } else if (key === "e") {
             finishEdit();
           } else if (key === "l") {
@@ -2307,6 +2315,7 @@ function showBrowser(
                     keyHint("d", "Delete"),
                     keyHint("e", "Edit"),
                     keyHint("p", "Pop"),
+                    ...(targets.length > 0 ? [keyHint("s", targets.length === 1 ? targets[0]!.label : "Send")] : []),
                   ]
               ).join(theme.fg("dim", " "))
             : "";
@@ -2782,7 +2791,7 @@ async function browse(ctx: ExtensionContext): Promise<void> {
       ctx.ui.notify("No stashed prompts", "info");
       return;
     }
-    const action = await showBrowser(ctx, entries, state);
+    const action = await showBrowser(ctx, entries, state, collectSendTargets(sendTargetEvents));
     if (!action) return;
     const { query, scope, selectedId, selectedIndex } = action;
     state = { query, scope, selectedId, selectedIndex };
@@ -2834,6 +2843,24 @@ async function runBrowserAction(
   if (action.type === "submit-queue") {
     const { value: outcome, next } = thenReload(() => submitQueuedEntry(ctx, action.entry));
     return outcome === "drafted" ? undefined : next;
+  }
+  if (action.type === "send") {
+    const { entry, targets } = action;
+    const label = targets.length === 1
+      ? targets[0]!.label
+      : await selectOption(ctx, "Send stash to", targets.map((target) => target.label), undefined, {
+          icons: pluginConfig.showIcons,
+        });
+    const target = targets.find((candidate) => candidate.label === label);
+    if (!target) return entries;
+    // Sending keeps the stash, the same as a restore.
+    const prompt = readStore(() => {
+      const text = editableEntryText(entry);
+      markEntryUsed(entry);
+      return { text, images: entry.attachments.filter((attachment) => attachment.kind === "image").length };
+    });
+    await target.send(prompt, ctx);
+    return undefined;
   }
   if (action.type === "delete") {
     if (action.entry.locked) {
@@ -2939,6 +2966,7 @@ export default async function promptStash(pi: ExtensionAPI): Promise<void> {
 
   pi.on("session_start", async (_event, ctx) => {
     if (!isMainTui(ctx)) return;
+    sendTargetEvents = pi.events;
     pluginConfig = await loadPluginConfig(ctx.cwd);
     installEditorBridge(ctx);
     warmStoragePermissions();

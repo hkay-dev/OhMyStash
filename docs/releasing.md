@@ -4,7 +4,7 @@ These are maintainer notes. You don't need any of this to use the plugin.
 
 ## Install archive
 
-The install archive has `package.json` and the four extension runtime files. Full documentation, demo media, tests, benchmarks, and capture tools stay in the repository.
+The install archive has `package.json` and the runtime files in `extensions/`. Full documentation, demo media, tests, benchmarks, and capture tools stay in the repository.
 
 The package `files` allowlist limits npm and Bun packs. GitHub downloads also use `.gitattributes` export rules, because Bun's Git dependency installer doesn't apply the `files` allowlist. `git archive` uses the same export rules when preparing a release package.
 

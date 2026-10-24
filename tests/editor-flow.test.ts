@@ -23,6 +23,7 @@ import type * as Tui from "@oh-my-pi/pi-tui";
 import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
 import { refreshDirsFromEnv } from "@oh-my-pi/pi-utils";
 import type * as PopupUi from "../extensions/ui";
+import { SEND_TARGETS_CHANNEL, type SendTarget, type SendTargetsRequest, type SentPrompt } from "../extensions/send-targets";
 
 type Handler = (ctx: ExtensionContext) => Promise<void> | void;
 type StoredEntry = { text: string; attachments: unknown[]; usedAt?: string };
@@ -53,6 +54,19 @@ let stashCommand: (args: string, ctx: ExtensionContext) => Promise<void> | void;
 const shortcuts: Handler[] = [];
 // Fixtures predate anything the tests stash, so "restore latest" picks fresh stashes first.
 let fixtureClock = Date.now() - 3_600_000;
+// The pi.events bus. Each test registers its own listeners; beforeEach clears them.
+const busListeners = new Map<string, Array<(data: unknown) => void>>();
+const bus = {
+  emit(channel: string, data: unknown) {
+    for (const listener of busListeners.get(channel) ?? []) listener(data);
+  },
+};
+
+function offerTargets(...targets: SendTarget[]): void {
+  busListeners.set(SEND_TARGETS_CHANNEL, [(data) => {
+    for (const target of targets) (data as SendTargetsRequest).add(target);
+  }]);
+}
 
 function image(label: string) {
   return { type: "image" as const, data: Buffer.from(label).toString("base64"), mimeType: "image/png" };
@@ -144,6 +158,7 @@ beforeAll(async () => {
   ({ OVERLAY_OPTIONS, selectOption } = await import("../extensions/ui"));
   ({ default: loadPlugin } = await import("../extensions/prompt-stash.ts"));
   await loadPlugin({
+    events: bus,
     on(event: string, handler: typeof sessionStart) {
       if (event === "session_start") sessionStart = handler;
     },
@@ -163,6 +178,7 @@ const CONFIG_CONTEXT = {
 
 beforeEach(async () => {
   rmSync(stashDir, { recursive: true, force: true });
+  busListeners.clear();
   mkdirSync(stashDir, { mode: 0o700 });
   writeSettings({});
   // Plugin config is module state shared with other test files.
@@ -314,6 +330,54 @@ test("submitting a queued stash does not depend on the Enter keybinding", async 
   }
 
   expect(submissions).toEqual(["/queue queued work"]);
+});
+
+test("s sends the selected stash to another plugin's target and keeps the stash and the draft", async () => {
+  const sessionId = randomUUID();
+  writeStash(sessionId, "loop this");
+  const sent: SentPrompt[] = [];
+  offerTargets({ label: "Elsewhere", send: (prompt) => void sent.push(prompt) });
+  const { ctx, state } = host(sessionId, { custom: browserKeys(["s"]) });
+  await sessionStart({}, ctx);
+  state.composer.setText("keep my draft");
+
+  await stashCommand("", ctx);
+
+  expect(sent).toEqual([{ text: "loop this", images: 0 }]);
+  expect(state.composer.getText()).toBe("keep my draft");
+  const [entry] = stashEntries();
+  expect(entry?.text).toBe("loop this");
+  expect(entry?.usedAt).toBeString();
+});
+
+test("with several targets, s asks which one gets the stash", async () => {
+  const sessionId = randomUUID();
+  writeStash(sessionId, "pick a place");
+  const sent: string[] = [];
+  offerTargets(
+    { label: "First", send: () => void sent.push("First") },
+    { label: "Second", send: () => void sent.push("Second") },
+  );
+  const { ctx } = host(sessionId, { custom: browserKeys(["s"], ["\u001b[B", "\r"]) });
+  await sessionStart({}, ctx);
+
+  await stashCommand("", ctx);
+
+  expect(sent).toEqual(["Second"]);
+});
+
+test("s does nothing when no plugin offers a target", async () => {
+  const sessionId = randomUUID();
+  writeStash(sessionId, "stay here");
+  const notices: string[] = [];
+  const { ctx, state } = host(sessionId, { custom: browserKeys(["s", "\u001b"]), notices });
+  await sessionStart({}, ctx);
+
+  await stashCommand("", ctx);
+
+  expect(state.composer.getText()).toBe("");
+  expect(stashEntries()[0]?.usedAt).toBeUndefined();
+  expect(notices).toEqual([]);
 });
 
 test("a second browser press in the same input batch is ignored", async () => {

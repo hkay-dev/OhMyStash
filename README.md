@@ -115,6 +115,12 @@ Search for a stash, select it, and press `e` to edit it.
 
 ![OhMyStash stash editing](assets/ohmystash-feature-editing.gif)
 
+### Sending to other plugins
+
+Another installed plugin can offer a place to send a stash. When one does, the browser shows `s` with that plugin's label, and pressing it closes the browser and hands the selected stash's text to that plugin. If more than one plugin offers a place, `s` asks which one. Your composer draft stays as it is, and the stash stays in the browser, the same as after a restore. Images stay behind. Without such a plugin, `s` does nothing and isn't shown.
+
+Plugin authors can find the details in [docs/send-targets.md](docs/send-targets.md).
+
 ### Locking and deletion
 
 Locked stashes remain protected during bulk deletion.
@@ -139,6 +145,7 @@ Locked stashes remain protected during bulk deletion.
 | Edit the selected stash | `e` |
 | Lock or unlock the selected stash | `l` |
 | Delete the selected unlocked stash | `d` or `Delete` |
+| Send the selected stash to another plugin, when one offers a place | `s` |
 | Delete every unlocked stash in the active scope | `Shift+D` |
 | Scroll the preview | `[` / `]` |
 | Clear search or close | `Esc` |

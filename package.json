@@ -1,6 +1,6 @@
 {
   "name": "@hkay-dev/ohmystash",
-  "version": "1.14.0",
+  "version": "1.15.0",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.3",
@@ -8,7 +8,8 @@
     "extensions"
   ],
   "exports": {
-    "./ui": "./extensions/ui.ts"
+    "./ui": "./extensions/ui.ts",
+    "./send-targets": "./extensions/send-targets.ts"
   },
   "description": "OhMyStash (OMS), a durable chat-scoped and global prompt manager for Oh My Pi.",
   "repository": {

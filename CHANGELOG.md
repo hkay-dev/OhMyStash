@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.15.0 - 2026-10-23
+
+### Added
+
+- Other plugins can offer places to send a stash. When one does, the browser shows `s` with its label, and `s` hands the selected stash's text to that plugin. With more than one, `s` asks which one. The composer draft stays as it is and the stash is kept, the same as after a restore. Without such a plugin, nothing changes.
+- `@hkay-dev/ohmystash/send-targets` exports the bus channel and the types for plugin authors. [docs/send-targets.md](docs/send-targets.md) has an example.
+
+### Tested
+
+- The TypeScript check and the full test suite pass, with new tests for sending to one target, picking between two, and pressing `s` with none.
+
 ## 1.14.0 - 2026-10-19
 
 ### Why
