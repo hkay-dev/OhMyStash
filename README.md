@@ -121,6 +121,12 @@ Another installed plugin can offer a place to send a stash. When one does, the b
 
 Plugin authors can find the details in [docs/send-targets.md](docs/send-targets.md).
 
+### Native dialogs
+
+When OMP runs inside a terminal app that can draw native dialogs, and that app's plugin offers itself as a native UI host, `Alt+Shift+S` opens the stash browser as a native dialog instead of the TUI overlay. Every browser action works there with the same results. The keys follow the native app's style, since letters type into the search: `Enter` restores, `Shift+Enter` pops, `Cmd+L` locks, `Cmd+Backspace` deletes and so on, and the dialog shows them. Without such a host, the browser is the TUI overlay, as always.
+
+Plugin authors can find the details in [docs/native-ui.md](docs/native-ui.md).
+
 ### Locking and deletion
 
 Locked stashes remain protected during bulk deletion.

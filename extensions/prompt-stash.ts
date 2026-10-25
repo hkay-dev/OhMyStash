@@ -44,6 +44,7 @@ import {
 import { SYMBOL_PRESETS } from "@oh-my-pi/pi-tui/theme/symbols";
 import { createFrame, extensionIcon, fitToWidth, OVERLAY_OPTIONS, selectOption } from "./ui";
 import { collectSendTargets, type SendTarget } from "./send-targets";
+import { collectNativeHost, type NativeListEvent, type NativeListSpec, type NativeUiHost } from "./native-ui";
 import {
   hasPrivateStoragePermissions,
   invalidatePrivateStoragePermission,
@@ -135,7 +136,8 @@ type BrowserAction =
   | ({ type: "submit-queue"; entry: StashEntry } & BrowserState)
   | ({ type: "send"; entry: StashEntry; targets: SendTarget[] } & BrowserState)
   | ({ type: "toggle-lock"; entry: StashEntry } & BrowserState)
-  | ({ type: "edit"; entry: StashEntry; tui: TUI } & BrowserState)
+  // The TUI browser passes its tui for the external editor; a native host edits on its own.
+  | ({ type: "edit"; entry: StashEntry; tui?: TUI } & BrowserState)
   | ({ type: "delete"; entry: StashEntry } & BrowserState)
   | ({ type: "delete-all"; entries: StashEntry[] } & BrowserState)
   | null;
@@ -231,8 +233,8 @@ const DEFAULT_CONFIG: PromptStashConfig = {
 // The main TUI session's settings. Subagents load this module too, so only the main session's
 // session_start writes them.
 let pluginConfig = { ...DEFAULT_CONFIG };
-// The main session's event bus, where other plugins offer places to send a stash.
-let sendTargetEvents: ExtensionAPI["events"] | undefined;
+// The main session's event bus, where other plugins offer places to send a stash and native dialogs.
+let pluginEvents: ExtensionAPI["events"] | undefined;
 const ACTIVE_EDITORS = new WeakMap<object, CustomEditor>();
 
 class EntryConflictError extends Error {}
@@ -2786,12 +2788,24 @@ async function browse(ctx: ExtensionContext): Promise<void> {
   queueMicrotask(() => OPENING_BROWSERS.delete(ctx.ui));
   let state: BrowserState = { query: "", scope: "all", selectedIndex: 0 };
   let entries = readStore(() => loadEntriesForUi(ctx));
+  const host = entries.length > 0 && !NATIVE_BROWSERS.has(ctx.ui) ? collectNativeHost(pluginEvents) : undefined;
+  if (host) {
+    NATIVE_BROWSERS.add(ctx.ui);
+    try {
+      if ((await browseNative(ctx, host, entries)) === "done") return;
+    } finally {
+      NATIVE_BROWSERS.delete(ctx.ui);
+    }
+  } else if (NATIVE_BROWSERS.has(ctx.ui)) {
+    // A native browser is already up and owns this opening.
+    return;
+  }
   while (true) {
     if (entries.length === 0) {
       ctx.ui.notify("No stashed prompts", "info");
       return;
     }
-    const action = await showBrowser(ctx, entries, state, collectSendTargets(sendTargetEvents));
+    const action = await showBrowser(ctx, entries, state, collectSendTargets(pluginEvents));
     if (!action) return;
     const { query, scope, selectedId, selectedIndex } = action;
     state = { query, scope, selectedId, selectedIndex };
@@ -2807,19 +2821,238 @@ async function browse(ctx: ExtensionContext): Promise<void> {
   }
 }
 
+// A native browser stays up across turns, so a second opening while it's up does nothing.
+const NATIVE_BROWSERS = new WeakSet<object>();
+const NATIVE_BROWSER_ID = "ohmystash.browser";
+const NATIVE_SEND_ID = "ohmystash.send";
+const NATIVE_PREVIEW_CHARS = 4000;
+
+// Cuts text for a native preview without splitting a surrogate pair.
+function nativePreviewText(text: string): string {
+  if (text.length <= NATIVE_PREVIEW_CHARS) return text;
+  const end = /[\uD800-\uDBFF]/.test(text[NATIVE_PREVIEW_CHARS - 1]!) ? NATIVE_PREVIEW_CHARS - 1 : NATIVE_PREVIEW_CHARS;
+  return text.slice(0, end);
+}
+
+function nativeBrowserSpec(
+  ctx: ExtensionContext,
+  entries: StashEntry[],
+  state: { query: string; scope: BrowserScope; selectedId?: string },
+  targets: SendTarget[],
+): NativeListSpec {
+  const currentSessionId = ctx.sessionManager.getSessionId();
+  const now = Date.now();
+  const items = entries.map((entry) => {
+    const marks: string[] = [];
+    if (entry.locked) marks.push("lock.fill");
+    if (entry.attachments.length > 0) marks.push("paperclip");
+    if (entry.preserved) marks.push("exclamationmark.triangle");
+    const tags: string[] = [];
+    if (entry.locked) tags.push("locked");
+    if (entry.inputMode === "queue") tags.push("queue");
+    const attachments = entry.attachments.length;
+    const meta = [
+      entry.displayTimestamp,
+      entry.lineCount === 1 ? "1 line" : `${entry.lineCount} lines`,
+      `${entry.text.length} chars`,
+      ...(attachments > 0 ? [attachments === 1 ? "1 attachment" : `${attachments} attachments`] : []),
+      ...(entry.locked ? ["locked"] : []),
+    ].join(" · ");
+    return {
+      id: entry.id,
+      title: entry.displayHeadline,
+      subtitle: entry.displayOrigin,
+      accessory: compactAge(entry.stashedAtMs, now),
+      icon: entry.inputMode === "queue" ? "text.line.last.and.arrowtriangle.forward" : "text.bubble",
+      marks,
+      scopes: isCurrentChat(entry, currentSessionId) ? ["current", "all"] : ["all"],
+      search: entry.searchTextAll,
+      tags,
+      preview: { meta, text: nativePreviewText(entry.text) },
+    };
+  });
+  return {
+    id: NATIVE_BROWSER_ID,
+    title: "OhMyStash",
+    icon: "tray.full",
+    placeholder: "Search stashes",
+    query: state.query,
+    selected: state.selectedId,
+    scopes: [
+      { id: "current", label: "This chat" },
+      { id: "all", label: "All chats" },
+    ],
+    scope: state.scope,
+    items,
+    actions: [
+      { id: "restore", label: "Restore", key: "enter", close: true },
+      { id: "pop", label: "Pop", key: "shift+enter", close: true },
+      { id: "queue", label: "Draft to queue", key: "alt+enter", close: true },
+      { id: "submit-queue", label: "Submit queue", key: "cmd+shift+enter", when: "queue", close: true },
+      ...(targets.length > 0
+        ? [{ id: "send", label: targets.length === 1 ? targets[0]!.label : "Send", key: "cmd+enter", close: true }]
+        : []),
+      { id: "edit", label: "Edit", key: "cmd+e" },
+      { id: "lock", label: "Lock", key: "cmd+l", unless: "locked" },
+      { id: "unlock", label: "Unlock", key: "cmd+l", when: "locked" },
+      {
+        id: "delete",
+        label: "Delete",
+        key: "cmd+backspace",
+        unless: "locked",
+        confirm: {
+          title: "Delete stashed prompt?",
+          message: "Permanently delete \u201c{title}\u201d?",
+          button: "Delete",
+          destructive: true,
+        },
+      },
+      {
+        id: "delete-all",
+        label: "Delete unlocked",
+        key: "cmd+shift+backspace",
+        item: false,
+        confirm: {
+          title: "Delete unlocked stashes?",
+          message: "Permanently delete every unlocked stash in this scope? Locked stashes are protected. This ignores the current search and cannot be undone.",
+          button: "Delete",
+          destructive: true,
+        },
+      },
+    ],
+    empty: "No stashed prompts in this chat",
+    preview: true,
+  };
+}
+
+// Runs the browser through a native host. Returns "fallback" when the host can't show the first
+// list, so this opening uses the TUI browser instead.
+async function browseNative(
+  ctx: ExtensionContext,
+  host: NativeUiHost,
+  initial: StashEntry[],
+): Promise<"done" | "fallback"> {
+  let entries = initial;
+  let state: BrowserState = { query: "", scope: "all", selectedIndex: 0 };
+  let first = true;
+  const ui: BrowserActionUi = {
+    confirmed: true,
+    async editText(entry) {
+      const original = editableEntryText(entry);
+      const edited = await host.edit({ id: "ohmystash.edit", title: "Edit stashed prompt", text: original, save: "Save" });
+      if (edited === undefined) return "cancelled";
+      if (edited === original) return "unchanged";
+      return { text: edited };
+    },
+    async pickTarget(labels) {
+      try {
+        const event = await host.list({
+          id: NATIVE_SEND_ID,
+          title: "Send stash to",
+          items: labels.map((label, index) => ({ id: String(index), title: label })),
+          actions: [{ id: "send", label: "Send", key: "enter", close: true }],
+        });
+        return event.type === "action" && event.item !== undefined ? labels[Number(event.item)] : undefined;
+      } finally {
+        await host.close(NATIVE_SEND_ID);
+      }
+    },
+  };
+  try {
+    while (true) {
+      if (entries.length === 0) {
+        ctx.ui.notify("No stashed prompts", "info");
+        return "done";
+      }
+      const targets = collectSendTargets(pluginEvents);
+      let event: NativeListEvent;
+      try {
+        event = await host.list(nativeBrowserSpec(ctx, entries, state, targets));
+      } catch (error) {
+        if (first) return "fallback";
+        throw error;
+      }
+      first = false;
+      const scope: BrowserScope = event.scope === "current" || event.scope === "all" ? event.scope : state.scope;
+      state = { query: event.query, scope, selectedId: event.type === "action" ? event.item : state.selectedId, selectedIndex: 0 };
+      if (event.type === "cancel") return "done";
+      const action = nativeBrowserAction(ctx, event.action, event.item, entries, state, targets);
+      if (!action) continue;
+      try {
+        const next = await runBrowserAction(ctx, action, entries, ui);
+        if (!next) return "done";
+        entries = next;
+      } catch (error) {
+        if (!(error instanceof EntryConflictError)) throw error;
+        ctx.ui.notify("That stash changed in another session, so OMS reloaded the browser", "warning");
+        entries = readStore(() => loadEntriesForUi(ctx));
+      }
+    }
+  } finally {
+    await host.close(NATIVE_BROWSER_ID);
+  }
+}
+
+// Maps a native list action to the TUI browser's action, so both run the same storage steps.
+function nativeBrowserAction(
+  ctx: ExtensionContext,
+  id: string,
+  itemId: string | undefined,
+  entries: StashEntry[],
+  state: BrowserState,
+  targets: SendTarget[],
+): NonNullable<BrowserAction> | undefined {
+  if (id === "delete-all") {
+    const currentSessionId = ctx.sessionManager.getSessionId();
+    const scoped = state.scope === "current"
+      ? entries.filter((entry) => isCurrentChat(entry, currentSessionId))
+      : entries;
+    return scoped.length > 0 ? { type: "delete-all", entries: [...scoped], ...state } : undefined;
+  }
+  const entry = entries.find((candidate) => candidate.id === itemId);
+  if (!entry) return undefined;
+  switch (id) {
+    case "restore":
+    case "pop":
+    case "queue":
+    case "submit-queue":
+    case "edit":
+    case "delete":
+      return { type: id, entry, ...state };
+    case "lock":
+    case "unlock":
+      return { type: "toggle-lock", entry, ...state };
+    case "send":
+      return targets.length > 0 ? { type: "send", entry, targets, ...state } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+// How runBrowserAction asks the user. The TUI browser leaves it empty; a native host confirms in
+// its own dialog, edits in its own editor and picks a send target in its own list.
+type BrowserActionUi = {
+  confirmed?: boolean;
+  editText?(entry: StashEntry): Promise<{ text: string } | "unchanged" | "cancelled">;
+  pickTarget?(labels: string[]): Promise<string | undefined>;
+};
+
 // Runs one browser action. Returns the stashes for the next opening, loaded in the action's own
 // storage scope, or undefined when the browser stays closed.
 async function runBrowserAction(
   ctx: ExtensionContext,
   action: NonNullable<BrowserAction>,
   entries: StashEntry[],
+  ui: BrowserActionUi = {},
 ): Promise<StashEntry[] | undefined> {
   const thenReload = <T>(step: () => T) => readStore(() => {
     const value = step();
     return { value, next: loadEntriesForUi(ctx) };
   });
   if (action.type === "edit") {
-    const edit = await editEntryText(ctx, action.entry, action.tui);
+    const edit = ui.editText
+      ? await ui.editText(action.entry)
+      : await editEntryText(ctx, action.entry, action.tui!);
     if (typeof edit === "string") {
       ctx.ui.notify(edit === "unchanged" ? "Stashed prompt unchanged" : "Stashed prompt edit cancelled", "info");
       return entries;
@@ -2848,9 +3081,11 @@ async function runBrowserAction(
     const { entry, targets } = action;
     const label = targets.length === 1
       ? targets[0]!.label
-      : await selectOption(ctx, "Send stash to", targets.map((target) => target.label), undefined, {
-          icons: pluginConfig.showIcons,
-        });
+      : ui.pickTarget
+        ? await ui.pickTarget(targets.map((target) => target.label))
+        : await selectOption(ctx, "Send stash to", targets.map((target) => target.label), undefined, {
+            icons: pluginConfig.showIcons,
+          });
     const target = targets.find((candidate) => candidate.label === label);
     if (!target) return entries;
     // Sending keeps the stash, the same as a restore.
@@ -2867,7 +3102,7 @@ async function runBrowserAction(
       ctx.ui.notify("Unlock this stash before deleting it", "warning");
       return entries;
     }
-    const confirmed = await ctx.ui.confirm(
+    const confirmed = ui.confirmed || await ctx.ui.confirm(
       "Delete stashed prompt?",
       `Permanently delete “${truncateToWidth(action.entry.displayHeadline, 80)}” from ${action.entry.displayTimestamp}${action.scope === "all" ? ` · ${action.entry.displayOrigin}` : ""}?`,
       { initialIndex: 1 },
@@ -2890,7 +3125,7 @@ async function runBrowserAction(
     }
     const count = deletable.length;
     const scopeLabel = action.scope === "current" ? "from this chat" : "across all chats";
-    const confirmed = await ctx.ui.confirm(
+    const confirmed = ui.confirmed || await ctx.ui.confirm(
       `Delete unlocked stashes ${scopeLabel}?`,
       `Permanently delete ${count} unlocked stashed ${count === 1 ? "prompt" : "prompts"} ${scopeLabel}? ${locked} locked ${locked === 1 ? "stash is" : "stashes are"} protected. This ignores the current search and cannot be undone.`,
       { initialIndex: 1 },
@@ -2966,7 +3201,7 @@ export default async function promptStash(pi: ExtensionAPI): Promise<void> {
 
   pi.on("session_start", async (_event, ctx) => {
     if (!isMainTui(ctx)) return;
-    sendTargetEvents = pi.events;
+    pluginEvents = pi.events;
     pluginConfig = await loadPluginConfig(ctx.cwd);
     installEditorBridge(ctx);
     warmStoragePermissions();

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Another plugin can offer itself as a native UI host, for example when OMP runs inside a terminal app that can draw native dialogs. When one does, the stash browser opens as a native dialog, and restore, pop, queue, send, edit, lock and delete all work there with the same results and messages. If the host can't show the dialog, the browser opens in the TUI as before. Without a host, nothing changes.
+- `@hkay-dev/ohmystash/native-ui` exports the bus channel and the types for plugin authors. [docs/native-ui.md](docs/native-ui.md) has an example and the key strings.
+
+### Tested
+
+- The TypeScript check, the browser and UI tests, and new tests that drive the browser through a fake host: restore closes it, lock lists it again with the same selection, delete skips the TUI confirmation, a failing host falls back to the TUI, and no host means no native browser.
+
 ## 1.15.0 - 2026-10-23
 
 ### Added

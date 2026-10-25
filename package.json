@@ -9,7 +9,8 @@
   ],
   "exports": {
     "./ui": "./extensions/ui.ts",
-    "./send-targets": "./extensions/send-targets.ts"
+    "./send-targets": "./extensions/send-targets.ts",
+    "./native-ui": "./extensions/native-ui.ts"
   },
   "description": "OhMyStash (OMS), a durable chat-scoped and global prompt manager for Oh My Pi.",
   "repository": {
