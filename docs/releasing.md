@@ -55,4 +55,4 @@ The older browser showcase and `capture:all` use worktree and seeded fixtures, a
 1. `bun run check` and `bun test` pass.
 2. Check the packed file list as above. It should list only `package.json` and `extensions/`.
 3. Run the packaged installed-runtime proof against the installed OMP version.
-4. Update `CHANGELOG.md` and the version in `package.json`, commit, push to `main`, tag `vX.Y.Z`, and create the GitHub release from that tag.
+4. Update `CHANGELOG.md`, the version in `package.json` and the pinned tag in the README's Install section (`github:hkay-dev/OhMyStash#vX.Y.Z`), commit, push to `main`, tag `vX.Y.Z`, and create the GitHub release from that tag.

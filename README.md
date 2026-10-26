@@ -26,7 +26,7 @@ Install directly from GitHub:
 omp plugin install github:hkay-dev/OhMyStash
 ```
 
-OMP installs the standard SDK dependencies for you, so there's no custom OMP build or separate installer. To pin this release, use `github:hkay-dev/OhMyStash#v1.13.0` instead.
+OMP installs the standard SDK dependencies for you, so there's no custom OMP build or separate installer. To pin this release, use `github:hkay-dev/OhMyStash#v1.15.0` instead.
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
