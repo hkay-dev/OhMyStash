@@ -20,7 +20,7 @@ If the app can't show the dialog, the overlay opens instead, without a message. 
 
 ## The dialog
 
-The dialog is titled OhMyStash, with a `Search stashes` field, a `This chat` and `All chats` switch, and a preview of the selected stash. It opens on `All chats`. Each row shows the headline, where the stash came from, and its age. Small symbols mark locked stashes, stashes with attachments and stashes OhMyStash preserved past the storage limit. Up and Down move, Tab switches between the two scopes, and Esc clears the search, then closes the dialog. With nothing in the chat, the list says `No stashed prompts in this chat`.
+The dialog is titled OhMyStash, with a `Search stashes` field, a `This chat` and `All chats` switch, and a preview of the selected stash. It opens on `All chats`. Each row shows the headline, where the stash came from, and its age. Small symbols mark locked stashes, stashes with attachments and conflict copies (an edit OhMyStash kept as a new stash so nothing was overwritten). Up and Down move, Tab switches between the two scopes, and Esc clears the search, then closes the dialog. With nothing in the chat, the list says `No stashed prompts in this chat`.
 
 Every action does the same thing, with the same messages, as in the overlay. See [restore, queue and pop](browser/restore-and-queue.md), [edit a stash](browser/editing.md) and [lock and delete](browser/lock-and-delete.md).
 

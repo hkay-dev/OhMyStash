@@ -30,7 +30,7 @@ A large pasted prompt opens with its full text, not the `[Large pasted prompt ..
 
 - **You save a change.** OMS stores the new text and says `Stashed prompt updated`. The stash keeps its lock, its mode, its chat and its images.
 - **You leave the text as it was.** OMS says `Stashed prompt unchanged` and writes nothing.
-- **You cancel.** Closing the built-in editor with `Esc` says `Stashed prompt edit cancelled`.
+- **You cancel.** Closing the built-in editor without saving says `Stashed prompt edit cancelled`.
 - **You empty it.** A stash with no images can't become empty. OMS shows `OMS failed: An attachment-free stash cannot be edited to an empty prompt` and keeps the old text. To get rid of a stash, [delete it](lock-and-delete.md). A stash with images can have its text emptied, because the images are still there.
 
 After any of these the browser reopens on the same stash.

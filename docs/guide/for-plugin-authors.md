@@ -53,7 +53,7 @@ If your plugin runs inside an app that can draw its own dialogs, it can draw the
 
 You answer a request on the `ohmystash:native-ui` channel by adding a host with a `name` and three functions:
 
-- `list(spec)` shows a searchable list, or updates the open one with the same `id`, and resolves with the user's next event (an action, or a cancel). Reject when you can't show it. If the first list of an opening rejects, OhMyStash opens its overlay instead, quietly.
+- `list(spec)` shows a searchable list, or updates the open one with the same `id`, and resolves with the user's next event (an action, or a cancel). Reject when you can't show it. If the first list of an opening rejects, OhMyStash opens its overlay instead, without a message.
 - `close(id)` closes a list if it's open. It never rejects.
 - `edit(spec)` shows a multi-line editor and resolves with the saved text, or `undefined` on cancel.
 

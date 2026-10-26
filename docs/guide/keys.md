@@ -80,4 +80,4 @@ When a native host shows the browser, it uses these keys. Letters type into the 
 | `Cmd+Backspace` | Delete. Not available on a locked stash. It asks first. |
 | `Cmd+Shift+Backspace` | Delete unlocked. It asks first. |
 
-The native browser's two scopes are labeled This chat and All chats. See [The native stash browser](native-dialogs.md).
+In the dialog itself, `Up` and `Down` move, `Tab` switches between This chat and All chats, and `Esc` clears the search, then closes it. See [The native stash browser](native-dialogs.md).

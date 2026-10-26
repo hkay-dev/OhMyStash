@@ -80,13 +80,13 @@ The footer lists the keys that work right now. Here's what each does and where i
 | `↑` `↓` | Move through the list. `Home` and `End` jump to the first and last stash |
 | `[` `]` | Scroll the preview |
 | `Enter` | Restore the stash. See [restore, queue and pop](restore-and-queue.md) |
-| `q` | Restore it as a draft. See [restore, queue and pop](restore-and-queue.md) |
-| `Q` | Queue it. See [restore, queue and pop](restore-and-queue.md) |
+| `q` | Put it in the composer as an editable `/queue` draft. See [restore, queue and pop](restore-and-queue.md) |
+| `Q` | Submit it to OMP's queue and keep the browser open. See [restore, queue and pop](restore-and-queue.md) |
 | `p` | Pop it. See [restore, queue and pop](restore-and-queue.md) |
 | `e` | Edit it. See [edit a stash](editing.md) |
 | `l` | Lock or unlock it. See [lock and delete](lock-and-delete.md) |
 | `d` | Delete it. See [lock and delete](lock-and-delete.md) |
-| `D` | Clear every stash in the current scope. See [lock and delete](lock-and-delete.md) |
+| `D` | Delete every unlocked stash in the current scope. See [lock and delete](lock-and-delete.md) |
 | `s` | Send it to another plugin. It's there when a plugin offers a target: its name when there's one, `Send` when there are several. See [send a stash to another plugin](../send-to-plugins.md) |
 | `Esc` | Clear the search if there is one, otherwise close the browser |
 
