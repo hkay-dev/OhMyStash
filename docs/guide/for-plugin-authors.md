@@ -6,7 +6,7 @@ covers:
   - extensions/native-ui.ts
   - extensions/ui.ts
 since: 2026-10-13
-description: What OhMyStash offers to other OMP plugins: send targets, native hosts and the shared picker look.
+description: "What OhMyStash offers to other OMP plugins: send targets, native hosts and the shared picker look."
 sidebar:
   order: 12
 ---
