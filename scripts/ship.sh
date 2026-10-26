@@ -1,6 +1,6 @@
 #!/bin/sh
-# Ship it (`tend ship`): refuse a dirty tree, run the checks, pack HEAD and install it into OMP on
-# this Mac. Tend pushes main afterwards, so this script never pushes the repo and never tags.
+# Ship it (`deckhand ship run ohmystash`): refuse a dirty tree, run the checks, pack HEAD and install it into OMP on
+# this Mac. Deckhand pushes main afterwards, so this script never pushes the repo and never tags.
 # The public GitHub release (tag, release notes) stays manual: docs/releasing.md.
 # The install follows ~/.agents/skills/omp-plugin-audit/reference/live-install.md. It always
 # installs HEAD into a new local-builds folder, even when package.json's version is already installed.
