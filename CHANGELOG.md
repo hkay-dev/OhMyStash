@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.16.0 - 2026-10-29
 
 ### Added
 
@@ -10,6 +10,7 @@
 ### Tested
 
 - The TypeScript check, the browser and UI tests, and new tests that drive the browser through a fake host: restore closes it, lock lists it again with the same selection, delete skips the TUI confirmation, a failing host falls back to the TUI, and no host means no native browser.
+- Checked against OMP 18.14.0. The SDK packages are now pinned to 18.14.0, with `^18.14.0` peers, so OMP 18.14.0 or newer is required.
 
 ## 1.15.0 - 2026-10-23
 

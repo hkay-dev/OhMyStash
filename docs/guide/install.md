@@ -13,7 +13,7 @@ OhMyStash installs straight from GitHub with OMP's plugin manager. There's no se
 
 ## What you need
 
-- OMP 18.12.1 or newer.
+- OMP 18.14.0 or newer.
 - Bun on your PATH. OMP's plugin manager installs packages with Bun.
 
 On macOS, install Bun with Homebrew:

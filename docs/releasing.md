@@ -20,7 +20,7 @@ git archive HEAD | tar -x -C "$tmp"
 
 ## Packaged installed-runtime proof
 
-Use the existing [settings capture](../showcase/ohmystash-settings.video.ts) to check a real package archive through the installed compiled OMP loader, not `-e` against this worktree. Review the installed version's contracts first. The recipe below targets stock OMP 18.10.4 using its tagged [CLI](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.10.4/docs/cli-reference.md), [loader](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.10.4/docs/extension-loading.md), [installer](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.10.4/docs/plugin-manager-installer-plumbing.md), and [root-path](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.10.4/docs/environment-variables.md) documentation. A newer source checkout isn't matching-version evidence.
+Use the existing [settings capture](../showcase/ohmystash-settings.video.ts) to check a real package archive through the installed compiled OMP loader, not `-e` against this worktree. Review the installed version's contracts first. The recipe below targets stock OMP 18.14.0 using its tagged [CLI](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.14.0/docs/cli-reference.md), [loader](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.14.0/docs/extension-loading.md), [installer](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.14.0/docs/plugin-manager-installer-plumbing.md), and [root-path](https://raw.githubusercontent.com/can1357/oh-my-pi/v18.14.0/docs/environment-variables.md) documentation. A newer source checkout isn't matching-version evidence.
 
 From this repository, with the capture dependencies installed:
 
@@ -31,7 +31,7 @@ git archive HEAD | tar -x -C "$OMS_CAPTURE_OUTPUT/source"
 artifact_name="$(npm pack "$OMS_CAPTURE_OUTPUT/source" --ignore-scripts --pack-destination "$OMS_CAPTURE_OUTPUT")"
 export OMS_CAPTURE_ARTIFACT="$OMS_CAPTURE_OUTPUT/$artifact_name"
 export OMS_CAPTURE_OMP="$(command -v omp)"
-export OMS_CAPTURE_OMP_VERSION=18.10.4
+export OMS_CAPTURE_OMP_VERSION=18.14.0
 npm exec -- tcut test showcase/ohmystash-settings.video.ts
 npm run capture:settings
 npm exec -- tcut doctor "$OMS_CAPTURE_OUTPUT/ohmystash-release.cast"
