@@ -18,5 +18,5 @@ OhMyStash (OMS, `@hkay-dev/ohmystash`) is an Oh My Pi plugin that stores unfinis
 ## Docs and bugs
 
 Docs: docs
-Bugs: kata project ohmystash
+Bugs: deckhand project ohmystash
 Visibility: public
