@@ -4,7 +4,7 @@ OhMyStash (OMS, `@hkay-dev/ohmystash`) is an Oh My Pi plugin that stores unfinis
 
 ## Checks
 
-- `bun run check` (runs `tsc --noEmit`).
+- `scripts/check.sh` (from any folder: `bun install --frozen-lockfile`, then `bun run check`, which is `tsc --noEmit` and the tests in `tests/`). `scripts/dev.sh` runs the same and prints how to load this checkout with `omp --plugin-dir`.
 - For a change, `bun test <file>` on the matching file in `tests/`. The full `bun run test` (all of `tests/`) only when Harsha asks.
 - The `capture:*` scripts and `benchmark:cross-chat` are for showcase media and benchmarks, not checks.
 
