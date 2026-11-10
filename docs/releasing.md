@@ -52,7 +52,7 @@ The older browser showcase and `capture:all` use worktree and seeded fixtures, a
 
 ## Release steps
 
-1. `bun run check` and `bun test` pass.
+1. Run `deckhand app check ohmystash`; don't run an additional full suite unless Harsha asks.
 2. Check the packed file list as above. It should list only `package.json` and `extensions/`.
 3. Run the packaged installed-runtime proof against the installed OMP version.
 4. Update `CHANGELOG.md`, the version in `package.json` and the pinned tag in the README's Install section (`github:hkay-dev/OhMyStash#vX.Y.Z`), then commit. Follow "Shipping and pushing" in `~/.agents/PROJECT-HISTORY.md` before any push or ship. Push `main` directly only when Harsha asks for that command in this chat, with `ARMADA_PUSH_OK=1`. Once the remote contains HEAD, the shared ship helper creates and pushes `vX.Y.Z` and creates the GitHub release; read its warnings before reporting completion.
