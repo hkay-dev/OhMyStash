@@ -11,7 +11,7 @@ OhMyStash (OMS, `@hkay-dev/ohmystash`) is an Oh My Pi plugin that stores unfinis
 ## Install and release
 
 - Install: `omp plugin install github:hkay-dev/OhMyStash`; the README has the details. Harsha's installed copy lives under `~/.omp/plugins/local-builds/`.
-- Ship: `deckhand ship run ohmystash` (runs `scripts/ship.sh`, which hands HEAD to Armada's shared `ship-omp-plugin`: pack, new `local-builds` folder, symlink and lock swap with rollback, plugin doctor, dotfiles source records, prune). The helper runs no checks and pushes no commits. It commits its two dotfiles source records unless either already has staged changes. For HEAD that the remote already contains, it creates and pushes the missing version tag and creates the missing GitHub release; it reports incomplete publication as a warning. Deckhand pushes main (`docs/releasing.md`).
+- Ship: Run deckhand ship run ohmystash. Read "Quirks" in docs/working-here.md for the shared helper sequence. Deckhand pushes main (docs/releasing.md).
 - Release steps, the packed-file check and the installed-runtime proof are in `docs/releasing.md`.
 - `docs/ui.md`, `docs/send-targets.md` and `docs/native-ui.md` describe the shared UI, send-target and native UI host exports.
 
