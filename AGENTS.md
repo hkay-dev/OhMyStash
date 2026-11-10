@@ -4,14 +4,14 @@ OhMyStash (OMS, `@hkay-dev/ohmystash`) is an Oh My Pi plugin that stores unfinis
 
 ## Checks
 
-- `scripts/check.sh` (from any folder: `bun install --frozen-lockfile`, then `bun run check`, which is `tsc --noEmit` and the tests in `tests/`). `scripts/dev.sh` runs the same and prints how to load this checkout with `omp --plugin-dir`.
+- `deckhand app check ohmystash` (runs `scripts/check.sh` from any folder: `bun install --frozen-lockfile`, then `bun run check`, which is `tsc --noEmit` and the tests in `tests/`). `scripts/dev.sh` runs the same and prints how to load this checkout with `omp --plugin-dir`.
 - The full `bun run test` (all of `tests/`) only when Harsha asks.
 - The `capture:*` scripts and `benchmark:cross-chat` are for showcase media and benchmarks, not checks.
 
 ## Install and release
 
 - Install: `omp plugin install github:hkay-dev/OhMyStash`; the README has the details. Harsha's installed copy lives under `~/.omp/plugins/local-builds/`.
-- Ship: `deckhand ship run ohmystash` (runs `scripts/ship.sh`, which hands HEAD to Armada's shared `ship-omp-plugin`: pack, new `local-builds` folder, symlink and lock swap with rollback, plugin doctor, dotfiles source records, prune). It runs no checks (the app's check already ran), never pushes and never tags, and writes the dotfiles records without committing them; Deckhand pushes main. The public GitHub release stays manual (`docs/releasing.md`).
+- Ship: `deckhand ship run ohmystash` (runs `scripts/ship.sh`, which hands HEAD to Armada's shared `ship-omp-plugin`: pack, new `local-builds` folder, symlink and lock swap with rollback, plugin doctor, dotfiles source records, prune). The helper runs no checks and pushes no commits. It commits its two dotfiles source records unless either already has staged changes. For HEAD that the remote already contains, it creates and pushes the missing version tag and creates the missing GitHub release; it reports incomplete publication as a warning. Deckhand pushes main (`docs/releasing.md`).
 - Release steps, the packed-file check and the installed-runtime proof are in `docs/releasing.md`.
 - `docs/ui.md`, `docs/send-targets.md` and `docs/native-ui.md` describe the shared UI, send-target and native UI host exports.
 
