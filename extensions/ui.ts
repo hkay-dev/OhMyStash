@@ -14,6 +14,7 @@ import {
   visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { SYMBOL_PRESETS, type SymbolKey } from "@oh-my-pi/pi-tui/theme/symbols";
+import { collectNativeHost, pickNativeOption } from "./native-ui";
 
 // OMP's stock bottom overlay, as Switch Model uses it: full width, up to every terminal row, no
 // backdrop. Closing it leaves the composer's text, undo history, and caret untouched.
@@ -622,6 +623,13 @@ export interface SelectOptionSettings {
   icons?: boolean;
   /** The option to select when the picker opens, if it is one of the options. */
   selected?: string;
+  /**
+   * Lets a native UI host draw the picker. When a host on `events` (a plugin's `pi.events`) answers on
+   * the `ohmystash:native-ui` channel, the options open as a native dialog with this `id`, and the result
+   * is the same as the terminal picker's. Without a host, or when the host fails to show the list, the
+   * terminal picker opens instead.
+   */
+  native?: { events: { emit(channel: string, data: unknown): void }; id: string };
 }
 
 export function selectOption(
@@ -630,6 +638,25 @@ export function selectOption(
   options: string[],
   iconKey?: string,
   settings?: SelectOptionSettings,
+): Promise<string | undefined> {
+  const native = settings?.native;
+  const host = native ? collectNativeHost(native.events) : undefined;
+  const terminal = () => selectOptionInTerminal(ctx, title, options, iconKey, settings);
+  if (!native || !host) return terminal();
+  return pickNativeOption(host, {
+    id: native.id,
+    title,
+    options,
+    ...(settings?.selected === undefined ? {} : { selected: settings.selected }),
+  }).catch(terminal);
+}
+
+function selectOptionInTerminal(
+  ctx: ExtensionContext,
+  title: string,
+  options: string[],
+  iconKey: string | undefined,
+  settings: SelectOptionSettings | undefined,
 ): Promise<string | undefined> {
   return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
     const icons = settings?.icons ?? true;

@@ -125,3 +125,40 @@ export function collectNativeHost(
   events?.emit(NATIVE_UI_CHANNEL, request);
   return found;
 }
+
+/** What `pickNativeOption` shows. */
+export interface NativePickSpec {
+  /** Stable per dialog, such as `my-plugin.models`. */
+  id: string;
+  title: string;
+  /** The options in display order. The user's pick resolves to one of these strings. */
+  options: readonly string[];
+  /** The option to select when the dialog opens, if it is one of the options. */
+  selected?: string;
+  /** The search field's hint. */
+  placeholder?: string;
+}
+
+/**
+ * Shows `options` as a native searchable list on `host` and resolves with the picked option, or
+ * undefined when the user cancels. Rejects when the host can't show the list, so a caller can fall
+ * back to its TUI. The dialog is closed before this resolves.
+ */
+export async function pickNativeOption(host: NativeUiHost, spec: NativePickSpec): Promise<string | undefined> {
+  const selected = spec.selected === undefined ? -1 : spec.options.indexOf(spec.selected);
+  try {
+    const event = await host.list({
+      id: spec.id,
+      title: spec.title,
+      ...(spec.placeholder === undefined ? {} : { placeholder: spec.placeholder }),
+      ...(selected === -1 ? {} : { selected: String(selected) }),
+      // The item id is the option's position, so options with the same text stay apart.
+      items: spec.options.map((option, index) => ({ id: String(index), title: option })),
+      actions: [{ id: "select", label: "Select", key: "enter", close: true }],
+    });
+    if (event.type !== "action" || event.action !== "select" || event.item === undefined) return undefined;
+    return spec.options[Number(event.item)];
+  } finally {
+    await host.close(spec.id);
+  }
+}

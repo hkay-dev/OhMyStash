@@ -89,7 +89,7 @@ The `@hkay-dev/ohmystash/ui` export has the helpers OhMyStash draws its own pick
 
 - `OVERLAY_OPTIONS` is the option to pass to `ctx.ui.custom` for OMP's bottom overlay. The composer's draft, caret and undo history stay untouched.
 - `createFrame(theme, width)` draws the accent-colored frame with the title in the top border.
-- `selectOption(ctx, title, options, iconKey?, settings?)` opens a searchable picker and resolves with the chosen string, or `undefined` when cancelled.
+- `selectOption(ctx, title, options, iconKey?, settings?)` opens a searchable picker and resolves with the chosen string, or `undefined` when cancelled. Pass `native: { events: pi.events, id: "my-plugin.colors" }` in `settings` and the picker opens as a native dialog when a host answers, with the same result; without a host it opens in the terminal as before.
 - `showList(ctx, options)` opens a searchable list of any items with footer actions, and `createList(tui, theme, options, done)` gives the same list as a component.
 - `formatShortcut(key, { icons })` and `formatShortcutRange(keys, { icons })` turn key ids such as `alt+shift+s` into labels like `Alt+Shift+S`, or Apple keyboard icons.
 - `fitToWidth(text, width)` and `extensionIcon(key)` help with row layout and Nerd Font glyphs.

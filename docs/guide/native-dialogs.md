@@ -50,4 +50,6 @@ Delete asks first in the app's own dialog: `Delete stashed prompt?` with `Perman
 
 When another OMP session or Harrier's Stash pane adds, edits, locks or deletes a stash, the open dialog updates in place and keeps your search, scope and selection. An action on a stash that changed in the instant before that update reloads the dialog with `That stash changed in another session, so OMS reloaded the browser`.
 
+Other plugins can use the same native dialogs for their own pickers, and they fall back to the overlay when no native host is there. See [for plugin authors](for-plugin-authors.md#reuse-the-picker-look).
+
 If you write a terminal app plugin, see [for plugin authors](for-plugin-authors.md).

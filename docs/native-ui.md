@@ -73,6 +73,12 @@ The stash browser uses:
 | `cmd+backspace` | Delete (unlocked stashes, confirmed) |
 | `cmd+shift+backspace` | Delete unlocked in this scope (confirmed) |
 
+## Native pickers for other plugins
+
+A plugin that picks from a list of strings can offer the same native dialog. Pass `native: { events: pi.events, id }` in the `settings` of `selectOption` from `@hkay-dev/ohmystash/ui` (see [ui.md](ui.md)). If a host answers on the bus, the list opens through it and `selectOption` resolves with the pick, or `undefined` on cancel. If no host answers, or `list` rejects, the terminal picker opens with the same result shape.
+
+To drive a host yourself, `@hkay-dev/ohmystash/native-ui` exports `collectNativeHost(events)` and `pickNativeOption(host, { id, title, options, selected?, placeholder? })`. The helper shows a list with one `Select` action on `enter`, resolves with the picked option or `undefined` on cancel, closes the list before it resolves, and rejects when the host does.
+
 ## Live updates
 
 While a list waits for the user, OhMyStash watches the stash folder. When another session or app changes a stash, it calls `list` again with the same id and the new items, and leaves out `query`, `scope` and `selected` so the host keeps what the user typed, picked and selected. It lists again only when the items changed. OhMyStash ignores a cancel from the earlier call, so the host may settle that call with one, but still runs an action from it.

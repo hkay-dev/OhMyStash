@@ -12,6 +12,7 @@ import {
   type NativeUiHost,
   type NativeUiRequest,
 } from "../extensions/native-ui";
+import { selectOption } from "../extensions/ui";
 
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 const previousConfigDir = process.env.PI_CONFIG_DIR;
@@ -240,4 +241,64 @@ test("a host that rejects the first list falls back to the TUI browser", async (
   expect(host.specs).toHaveLength(1);
   expect(state.tuiOpened).toBeTrue();
   expect(state.notices).toEqual([]);
+});
+
+// A ctx whose terminal overlay answers with `tuiAnswer`, and counts how often it opened.
+function pickerCtx(tuiAnswer: string | undefined) {
+  const state = { opened: 0 };
+  const ctx = {
+    ui: {
+      custom: async () => {
+        state.opened += 1;
+        return tuiAnswer;
+      },
+    },
+  } as unknown as ExtensionContext;
+  return { ctx, state };
+}
+
+test("selectOption with events uses a native host's pick and closes the list", async () => {
+  const host = fakeHost([(spec) => ({ type: "action", action: "select", item: spec.items[2]!.id, query: "" })]);
+  const stop = useHost(host);
+  try {
+    const { ctx, state } = pickerCtx("terminal");
+    const picked = await selectOption(ctx, "Pick", ["Red", "Green", "Blue"], undefined, {
+      selected: "Green",
+      native: { events, id: "test.colors" },
+    });
+    expect(picked).toBe("Blue");
+    expect(state.opened).toBe(0);
+    expect(host.specs[0]).toMatchObject({ id: "test.colors", title: "Pick", selected: "1" });
+    expect(host.specs[0]!.items.map((item) => item.title)).toEqual(["Red", "Green", "Blue"]);
+    expect(host.closed).toEqual(["test.colors"]);
+  } finally {
+    stop();
+  }
+});
+
+test("selectOption with events resolves undefined when the host cancels", async () => {
+  const host = fakeHost([() => ({ type: "cancel", query: "" })]);
+  const stop = useHost(host);
+  try {
+    const { ctx, state } = pickerCtx("terminal");
+    expect(await selectOption(ctx, "Pick", ["Red"], undefined, { native: { events, id: "test.cancel" } })).toBeUndefined();
+    expect(state.opened).toBe(0);
+  } finally {
+    stop();
+  }
+});
+
+test("selectOption with events falls back to the terminal when no host answers or the host fails", async () => {
+  const none = pickerCtx("terminal");
+  expect(await selectOption(none.ctx, "Pick", ["Red"], undefined, { native: { events, id: "test.none" } })).toBe("terminal");
+  expect(none.state.opened).toBe(1);
+
+  const stop = useHost(fakeHost([]));
+  try {
+    const failed = pickerCtx("terminal");
+    expect(await selectOption(failed.ctx, "Pick", ["Red"], undefined, { native: { events, id: "test.fail" } })).toBe("terminal");
+    expect(failed.state.opened).toBe(1);
+  } finally {
+    stop();
+  }
 });
