@@ -42,9 +42,9 @@ interface NativeUiHost {
 }
 ```
 
-- `list` shows a searchable list, or updates the open one with the same `id`, and resolves with the user's next event: `{ type: "action", action, item?, query, scope? }` or `{ type: "cancel", query, scope? }`. It rejects when the host can't show it. If the first `list` of an opening rejects, OhMyStash opens its TUI browser instead, without a message. A later rejection shows the usual `OMS failed:` message and ends the browser.
+- `list` shows a searchable list, or updates the open one with the same `id`, and resolves with the user's next event: `{ type: "action", action, item?, query, scope? }` or `{ type: "cancel", query, scope? }`. It rejects when the host can't show it. If the first `list` of an opening rejects, OhMyStash opens its TUI browser instead, without a message. A later rejection ends the browser without a message.
 - `close(id)` closes that list if it's open. It never rejects. OhMyStash calls it when the browser ends for any reason.
-- `edit` shows a multi-line text editor and resolves with the text on save, or `undefined` on cancel. OhMyStash uses it for Edit.
+- `edit` shows a multi-line text editor and resolves with the text on save, or `undefined` on cancel. OhMyStash uses it for Edit, unless the `editorCommand` setting is set, the request would pass 1 MB, or `edit` rejects: then OhMyStash closes the list and opens its TUI editor path instead.
 
 The list spec has an `id`, `title`, optional `icon`, `placeholder`, `query`, `selected` item id, `scopes` (a segmented switch) with the `scope` showing, `items`, `actions`, an `empty` text and a `preview` flag. Each item has an `id`, `title`, optional `subtitle`, `accessory` (a short trailing text such as an age), `icon`, `marks` (small symbols after the subtitle), `scopes` it shows in, extra `search` text, `tags`, and a `preview` with optional `meta` and the `text`. Icons and marks are SF Symbol names. The full types, with comments, are in `extensions/native-ui.ts`.
 
@@ -87,4 +87,4 @@ While a list waits for the user, OhMyStash watches the stash folder. When anothe
 
 After an action without `close`, the dialog stays up but ignores input until the plugin calls `list` again with the same id, `edit`, or `close`. OhMyStash always does one of these right after the action runs. A host may close a list on its own when nothing comes for a few seconds.
 
-An `edit` while a list is up shows the editor in the list's place, and the next `list` with that id brings the list back. With more than one send target, Send opens a second list, `ohmystash.send`, to pick one, and OhMyStash closes it after the pick.
+An `edit` while a list is up shows the editor in the list's place, and the next `list` with that id brings the list back. With more than one send target, Send opens a second list, `ohmystash.send`, to pick one, and OhMyStash closes it after a pick. On cancel, OhMyStash leaves it for the browser's next `list` to replace, so the window doesn't close in between.

@@ -16,7 +16,7 @@ When OMP runs inside a terminal app that can draw its own windows, and that app'
 
 Nothing to set up in OhMyStash. Press `Alt+Shift+S` (or whatever you set as the browser shortcut) or run `/stash`. If a native host is there, the dialog opens. If not, you get the usual [stash browser](browser/index.md) overlay.
 
-If the app can't show the dialog, the overlay opens instead, without a message. With no stashes, you get `No stashed prompts` either way.
+If the app can't show the dialog, the overlay opens instead, without a message. If the dialog fails later, the browser closes without a message. With no stashes, you get `No stashed prompts` only when the browser opens empty.
 
 ## The dialog
 
@@ -44,7 +44,7 @@ Restore, Pop, Draft to queue, Submit queue and Send close the dialog. Edit, Lock
 
 ## Edit and delete dialogs
 
-Edit opens a text editor titled `Edit stashed prompt` with a `Save` button. Cancelling, or saving without changes, leaves the stash alone and shows a message.
+Edit opens a text editor titled `Edit stashed prompt` with a `Save` button. When you set an [editor command](settings.md), or the prompt is too large for the dialog, Edit uses the same editor as the overlay instead. Cancelling, or saving without changes, leaves the stash alone and shows a message.
 
 Delete asks first in the app's own dialog: `Delete stashed prompt?` with `Permanently delete “<headline>”?` and a Delete button. Delete unlocked asks `Delete unlocked stashes?`, says locked stashes are protected and that it ignores the current search, and can't be undone. The overlay's own confirmation isn't shown on top of these.
 
