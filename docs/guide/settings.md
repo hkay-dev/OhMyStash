@@ -47,6 +47,8 @@ Opens the [stash browser](browser/index.md). Enter `none` to turn it off. The `/
 
 The command the browser runs when you press `e` to [edit a stash](browser/editing.md), for example `nvim` or `code --wait`. Use a command that waits until you close the file. Blank uses the editor OMP has registered from `VISUAL` or `EDITOR`, and if there isn't one, OMP's built-in multi-line editor.
 
+In the [native stash browser](native-dialogs.md), a set command also takes over Edit. The native editor opens only when this setting is blank. A prompt too large for the native editor, or a native editor that fails to open, uses the same editor choice as the overlay.
+
 ### Browser layout
 
 How the list and the preview sit in the browser.

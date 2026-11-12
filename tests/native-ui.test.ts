@@ -302,3 +302,46 @@ test("selectOption with events falls back to the terminal when no host answers o
     stop();
   }
 });
+
+test("a spec built from huge stashes stays under Harrier's 1 MiB line cap and still searches the start", async () => {
+  const ids: string[] = [];
+  for (let index = 0; index < 100; index += 1) ids.push(writeStash(`needle${index} ${"x".repeat(150_000)}`).id);
+  const host = fakeHost([() => ({ type: "cancel", query: "", scope: "all" })]);
+  useHost(host);
+  const { ctx } = context();
+  await stashCommand.handler("", ctx);
+  const spec = host.specs[0]!;
+  expect(spec.items).toHaveLength(100);
+  expect(Buffer.byteLength(JSON.stringify(spec))).toBeLessThan(1_000_000);
+  for (const id of ids) {
+    const item = spec.items.find((candidate) => candidate.id === id)!;
+    expect(item.search).toContain("Native Tests");
+    expect(item.search).toMatch(/needle\d+ /);
+  }
+});
+
+test("an edit the host rejects falls back to the editor path", async () => {
+  const { id, path } = writeStash("edit me natively");
+  const host = fakeHost([
+    () => ({ type: "action", action: "edit", item: id, query: "", scope: "all" }),
+    () => ({ type: "cancel", query: "", scope: "all" }),
+  ]);
+  useHost(host);
+  const { ctx, state } = context({ editor: async () => "edited via fallback" });
+  await stashCommand.handler("", ctx);
+  expect(JSON.parse(readFileSync(path, "utf8")).text).toBe("edited via fallback");
+  expect(state.notices).toContain("Stashed prompt updated");
+});
+
+test("a host that fails after an action closes the browser without an error", async () => {
+  const { id } = writeStash("lock then fail");
+  const host = fakeHost([
+    () => ({ type: "action", action: "lock", item: id, query: "", scope: "all" }),
+    () => Promise.reject(new Error("pane lost focus")),
+  ]);
+  useHost(host);
+  const { ctx, state } = context();
+  await stashCommand.handler("", ctx);
+  expect(state.notices).toEqual(["Stash locked"]);
+  expect(host.closed).toEqual(["ohmystash.browser"]);
+});

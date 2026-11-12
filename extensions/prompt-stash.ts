@@ -2055,12 +2055,12 @@ function editableEntryText(entry: StashEntry): string {
 async function editEntryText(
   ctx: ExtensionContext,
   entry: StashEntry,
-  tui: TUI,
+  tui: TUI | undefined,
 ): Promise<{ text: string } | "unchanged" | "cancelled"> {
   const original = editableEntryText(entry);
   const editorCommand = pluginConfig.editorCommand || getEditorCommand();
   let edited: string | null | undefined;
-  if (editorCommand) {
+  if (editorCommand && tui) {
     tui.stop();
     try {
       // Editors such as vim, nano, and helix end every saved file with a newline. Keep it only when
@@ -2925,12 +2925,31 @@ const NATIVE_BROWSERS = new WeakSet<object>();
 const NATIVE_BROWSER_ID = "ohmystash.browser";
 const NATIVE_SEND_ID = "ohmystash.send";
 const NATIVE_PREVIEW_CHARS = 4000;
+// Harrier's control socket drops a line past 1 MiB, so one request stays under this many bytes.
+const NATIVE_LINE_BYTES = 1_000_000;
+// The start of a prompt that item.search carries, so the host ranks short text per keystroke.
+const NATIVE_SEARCH_CHARS = 1000;
 
 // Cuts text for a native preview without splitting a surrogate pair.
 function nativePreviewText(text: string): string {
   if (text.length <= NATIVE_PREVIEW_CHARS) return text;
   const end = /[\uD800-\uDBFF]/.test(text[NATIVE_PREVIEW_CHARS - 1]!) ? NATIVE_PREVIEW_CHARS - 1 : NATIVE_PREVIEW_CHARS;
   return text.slice(0, end);
+}
+
+// The text a native host searches: origin and metadata tokens plus the start of the prompt, never the whole body.
+function nativeSearchText(entry: StashEntry): string {
+  const attachments = entry.attachments
+    .map((attachment) =>
+      attachment.kind === "image"
+        ? `image ${attachment.mimeType}`
+        : `paste ${attachment.lineCount} lines ${attachment.charCount} chars`,
+    )
+    .join(" ");
+  const flags = `${entry.inputMode} ${entry.locked ? "locked" : ""} ${entry.preserved ? "preserved conflict" : ""}`;
+  const origin = `${entry.displayOrigin} ${entry.origin?.workspaceName ?? ""} ${entry.origin?.sessionId ?? ""}`;
+  const text = entry.text.length <= NATIVE_SEARCH_CHARS ? entry.text : entry.text.slice(0, NATIVE_SEARCH_CHARS);
+  return `${flags} ${text}\n${attachments}\n${entry.displayTimestamp}\n${origin}`;
 }
 
 function nativeBrowserSpec(
@@ -2965,7 +2984,7 @@ function nativeBrowserSpec(
       icon: entry.inputMode === "queue" ? "text.line.last.and.arrowtriangle.forward" : "text.bubble",
       marks,
       scopes: isCurrentChat(entry, currentSessionId) ? ["current", "all"] : ["all"],
-      search: entry.searchTextAll,
+      search: nativeSearchText(entry),
       tags,
       preview: { meta, text: nativePreviewText(entry.text) },
     };
@@ -3065,8 +3084,18 @@ async function browseNative(
   const ui: BrowserActionUi = {
     confirmed: true,
     async editText(entry) {
+      // A configured editor command and a text too big for one socket line use the TUI path.
+      const viaTui = () => editEntryText(ctx, entry, ACTIVE_EDITORS.get(ctx.sessionManager)?.tui);
+      if (pluginConfig.editorCommand) return viaTui();
       const original = editableEntryText(entry);
-      const edited = await host.edit({ id: "ohmystash.edit", title: "Edit stashed prompt", text: original, save: "Save" });
+      const spec = { id: "ohmystash.edit", title: "Edit stashed prompt", text: original, save: "Save" };
+      if (Buffer.byteLength(JSON.stringify(spec)) > NATIVE_LINE_BYTES) return viaTui();
+      let edited: string | undefined;
+      try {
+        edited = await host.edit(spec);
+      } catch {
+        return viaTui();
+      }
       if (edited === undefined) return "cancelled";
       if (edited === original) return "unchanged";
       return { text: edited };
@@ -3095,9 +3124,10 @@ async function browseNative(
       let event: NativeListEvent;
       try {
         event = await nextEvent(targets);
-      } catch (error) {
+      } catch {
         if (first) return "fallback";
-        throw error;
+        // A host that lost its window or pane after an action ends the browser quietly.
+        return "done";
       }
       first = false;
       const scope: BrowserScope = event.scope === "current" || event.scope === "all" ? event.scope : state.scope;
