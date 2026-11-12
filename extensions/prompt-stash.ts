@@ -2930,10 +2930,10 @@ const NATIVE_LINE_BYTES = 1_000_000;
 // The start of a prompt that item.search carries, so the host ranks short text per keystroke.
 const NATIVE_SEARCH_CHARS = 1000;
 
-// Cuts text for a native preview without splitting a surrogate pair.
-function nativePreviewText(text: string): string {
-  if (text.length <= NATIVE_PREVIEW_CHARS) return text;
-  const end = /[\uD800-\uDBFF]/.test(text[NATIVE_PREVIEW_CHARS - 1]!) ? NATIVE_PREVIEW_CHARS - 1 : NATIVE_PREVIEW_CHARS;
+// Cuts text to at most max characters without splitting a surrogate pair.
+function nativeCut(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const end = /[\uD800-\uDBFF]/.test(text[max - 1]!) ? max - 1 : max;
   return text.slice(0, end);
 }
 
@@ -2948,7 +2948,7 @@ function nativeSearchText(entry: StashEntry): string {
     .join(" ");
   const flags = `${entry.inputMode} ${entry.locked ? "locked" : ""} ${entry.preserved ? "preserved conflict" : ""}`;
   const origin = `${entry.displayOrigin} ${entry.origin?.workspaceName ?? ""} ${entry.origin?.sessionId ?? ""}`;
-  const text = entry.text.length <= NATIVE_SEARCH_CHARS ? entry.text : entry.text.slice(0, NATIVE_SEARCH_CHARS);
+  const text = nativeCut(entry.text, NATIVE_SEARCH_CHARS);
   return `${flags} ${text}\n${attachments}\n${entry.displayTimestamp}\n${origin}`;
 }
 
@@ -2986,7 +2986,7 @@ function nativeBrowserSpec(
       scopes: isCurrentChat(entry, currentSessionId) ? ["current", "all"] : ["all"],
       search: nativeSearchText(entry),
       tags,
-      preview: { meta, text: nativePreviewText(entry.text) },
+      preview: { meta, text: nativeCut(entry.text, NATIVE_PREVIEW_CHARS) },
     };
   });
   return {
@@ -3085,7 +3085,11 @@ async function browseNative(
     confirmed: true,
     async editText(entry) {
       // A configured editor command and a text too big for one socket line use the TUI path.
-      const viaTui = () => editEntryText(ctx, entry, ACTIVE_EDITORS.get(ctx.sessionManager)?.tui);
+      const viaTui = async () => {
+        // A pending native list would hold the keyboard while a terminal editor runs.
+        await host.close(NATIVE_BROWSER_ID);
+        return editEntryText(ctx, entry, ACTIVE_EDITORS.get(ctx.sessionManager)?.tui);
+      };
       if (pluginConfig.editorCommand) return viaTui();
       const original = editableEntryText(entry);
       const spec = { id: "ohmystash.edit", title: "Edit stashed prompt", text: original, save: "Save" };
