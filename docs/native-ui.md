@@ -75,7 +75,7 @@ The stash browser uses:
 
 ## Live updates
 
-While a list waits for the user, OhMyStash watches the stash folder. When another session or app changes a stash, it calls `list` again with the same id and the new items, and leaves out `query`, `scope` and `selected` so the host keeps what the user typed, picked and selected. OhMyStash then takes the event from this newest call only, so the host may settle the earlier call any way it likes, such as with a cancel.
+While a list waits for the user, OhMyStash watches the stash folder. When another session or app changes a stash, it calls `list` again with the same id and the new items, and leaves out `query`, `scope` and `selected` so the host keeps what the user typed, picked and selected. It lists again only when the items changed. OhMyStash ignores a cancel from the earlier call, so the host may settle that call with one, but still runs an action from it.
 
 ## Pending lists
 

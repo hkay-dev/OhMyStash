@@ -2196,6 +2196,10 @@ function showBrowser(
       // Another session or Harrier changed the folder: show its stashes, on the same one if it's
       // still there, and keep the search.
       live.changed = () => {
+        if (live.entries.length === 0) {
+          done(null);
+          return;
+        }
         const selectedId = selectedEntry()?.id;
         entries = live.entries;
         currentEntries = entries.filter((entry) => isCurrentChat(entry, currentSessionId));
@@ -2859,6 +2863,8 @@ function watchEntries(live: LiveEntries): () => void {
   };
 }
 
+const BROWSER_WATCHES = new WeakMap<object, () => void>();
+
 async function browse(ctx: ExtensionContext): Promise<void> {
   if (!isMainTui(ctx) || OPENING_BROWSERS.has(ctx.ui)) return;
   OPENING_BROWSERS.add(ctx.ui);
@@ -2872,7 +2878,10 @@ async function browse(ctx: ExtensionContext): Promise<void> {
     return;
   }
   if (NATIVE_BROWSERS.has(ctx.ui)) return; // A native browser is already up and owns this opening.
+  // A browser that another dialog displaced never returns, so the next opening stops its watch.
+  BROWSER_WATCHES.get(ctx.ui)?.();
   const stopWatching = watchEntries(live);
+  BROWSER_WATCHES.set(ctx.ui, stopWatching);
   try {
     const host = collectNativeHost(pluginEvents);
     if (host) {
@@ -2889,7 +2898,10 @@ async function browse(ctx: ExtensionContext): Promise<void> {
         return;
       }
       const action = await showBrowser(ctx, live, state, collectSendTargets(pluginEvents));
-      if (!action) return;
+      if (!action) {
+        if (live.entries.length === 0) ctx.ui.notify("No stashed prompts", "info");
+        return;
+      }
       const { query, scope, selectedId, selectedIndex } = action;
       state = { query, scope, selectedId, selectedIndex };
       try {
@@ -2904,6 +2916,7 @@ async function browse(ctx: ExtensionContext): Promise<void> {
     }
   } finally {
     stopWatching();
+    if (BROWSER_WATCHES.get(ctx.ui) === stopWatching) BROWSER_WATCHES.delete(ctx.ui);
   }
 }
 
@@ -3022,21 +3035,27 @@ async function browseNative(
   let first = true;
   // Waits for the user's next event. A folder change lists again with the same id, which updates
   // the open list in place and keeps the user's search, scope and selection. The host then
-  // settles the earlier call, often as a cancel, so only the newest call's event counts.
+  // settles the earlier call, often as a cancel, so only the newest call's cancel counts. A
+  // restore elsewhere only moves usedAt, which the list doesn't show, so it lists nothing new and
+  // leaves an open delete confirmation alone.
   const nextEvent = async (targets: SendTarget[]): Promise<NativeListEvent> => {
     const { promise, resolve, reject } = Promise.withResolvers<NativeListEvent>();
     let current: Promise<NativeListEvent> | undefined;
+    let shown = "";
     const list = (spec: NativeListSpec) => {
       const call = host.list(spec);
       current = call;
+      shown = JSON.stringify(spec.items);
       call.then(
-        (event) => call === current && resolve(event),
+        (event) => (call === current || event.type === "action") && resolve(event),
         (error) => call === current && reject(error),
       );
     };
     list(nativeBrowserSpec(ctx, live.entries, state, targets));
-    live.changed = () =>
-      list({ ...nativeBrowserSpec(ctx, live.entries, state, targets), query: undefined, selected: undefined, scope: undefined });
+    live.changed = () => {
+      const spec = nativeBrowserSpec(ctx, live.entries, state, targets);
+      if (JSON.stringify(spec.items) !== shown) list({ ...spec, query: undefined, selected: undefined, scope: undefined });
+    };
     try {
       return await promise;
     } finally {
