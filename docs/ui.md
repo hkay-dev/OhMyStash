@@ -2,7 +2,7 @@
 
 OhMyStash exports its picker helpers at `@hkay-dev/ohmystash/ui`, so other OMP plugins can draw the same frames, lists, and key labels. They use only stock public SDK exports.
 
-To use them, add OhMyStash as a package dependency of your plugin, for example `github:hkay-dev/OhMyStash#v1.12.0`. OMP installs declared dependencies through its normal package manager before it loads your extension. Copying a single extension file, or linking extracted files without installing dependencies, doesn't supply the module.
+To use them, add OhMyStash as a package dependency of your plugin, for example `github:hkay-dev/OhMyStash#v1.17.0`. OMP installs declared dependencies through its normal package manager before it loads your extension. Copying a single extension file, or linking extracted files without installing dependencies, doesn't supply the module.
 
 ## Exports
 

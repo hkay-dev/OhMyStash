@@ -42,7 +42,7 @@ OMP installs the standard SDK packages OMS depends on for you.
 To stay on one release, add its tag to the address. This pins version 1.15.0:
 
 ```sh
-omp plugin install github:hkay-dev/OhMyStash#v1.15.0
+omp plugin install github:hkay-dev/OhMyStash#v1.17.0
 ```
 
 ## Update

@@ -11,7 +11,7 @@ sidebar:
   order: 12
 ---
 
-If you're writing another OMP plugin, OhMyStash gives you three things. Each one is a separate export of the `@hkay-dev/ohmystash` package, so add OhMyStash as a dependency of your plugin (for example `github:hkay-dev/OhMyStash#v1.15.0`). OMP installs declared dependencies before it loads your extension, so the imports below resolve.
+If you're writing another OMP plugin, OhMyStash gives you three things. Each one is a separate export of the `@hkay-dev/ohmystash` package, so add OhMyStash as a dependency of your plugin (for example `github:hkay-dev/OhMyStash#v1.17.0`). OMP installs declared dependencies before it loads your extension, so the imports below resolve.
 
 The full references stay in the repo's docs, and the site shows them under Internals. This page is the short version.
 

@@ -26,7 +26,7 @@ Install directly from GitHub:
 omp plugin install github:hkay-dev/OhMyStash
 ```
 
-OMP installs the standard SDK dependencies for you, so there's no custom OMP build or separate installer. To pin this release, use `github:hkay-dev/OhMyStash#v1.16.0` instead.
+OMP installs the standard SDK dependencies for you, so there's no custom OMP build or separate installer. To pin this release, use `github:hkay-dev/OhMyStash#v1.17.0` instead.
 
 Restart OMP, then open the browser with `Alt+Shift+S` or `/stash`.
 
@@ -330,7 +330,7 @@ OhMyStash attaches to the composer when a session starts. Restart OMP after inst
 
 ## Development
 
-Use Bun 1.4.3. Development dependencies pin the official SDK packages to 18.14.0, with `^18.14.0` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
+Use Bun 1.4.3. Development dependencies pin the official SDK packages to 18.19.0, with `^18.14.0` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
