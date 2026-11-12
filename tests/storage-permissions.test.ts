@@ -20,7 +20,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createStoragePermissions } from "../extensions/storage-permissions.ts";
+import { createStoragePermissions, inoMatches } from "../extensions/storage-permissions.ts";
 
 const testDirectory = mkdtempSync(join(tmpdir(), "oms-permissions-test-"));
 afterAll(() => rmSync(testDirectory, { recursive: true, force: true }));
@@ -728,3 +728,11 @@ windowsTest("Windows caches the compiled ACL helper in the private directory and
     else process.env.OMS_ACL_TRANSPORT = previous;
   }
 }, 60_000);
+
+test("compares 64-bit NTFS file IDs without losing precision above 2^53", () => {
+  const big = 2n ** 53n + 1n;
+  expect(inoMatches(String(big), big)).toBe(true);
+  // Number() rounds both of these to the same double.
+  expect(inoMatches(String(big - 1n), big)).toBe(false);
+  expect(inoMatches("not a number", big)).toBe(false);
+});

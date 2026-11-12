@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, type Stats } from "node:fs";
+import { existsSync, lstatSync, type BigIntStats, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createWindowsAclTransport } from "./storage-acl-transport.mjs";
@@ -26,6 +26,7 @@ interface PermissionDependencies {
   platform: NodeJS.Platform;
   getuid: () => number | undefined;
   lstat: (path: string) => Stats;
+  lstatBigint: (path: string) => BigIntStats;
   native: (action: NativeAction, path: string, root?: string) => NativeReply;
 }
 
@@ -101,12 +102,22 @@ function queryNative(action: NativeAction, path: string, root?: string): NativeR
   return reply as NativeReply;
 }
 
+// NTFS file IDs are 64-bit, so compare as BigInt: Number loses precision above 2^53.
+export function inoMatches(nativeIno: string, ino: bigint): boolean {
+  try {
+    return BigInt(nativeIno) === ino;
+  } catch {
+    return false;
+  }
+}
+
 // Dependency injection lets POSIX ownership and native failures be tested on either host.
 export function createStoragePermissions(overrides: Partial<PermissionDependencies> = {}) {
   const dependencies: PermissionDependencies = {
     platform: process.platform,
     getuid: () => process.getuid?.(),
     lstat: lstatSync,
+    lstatBigint: (path) => lstatSync(path, { bigint: true }),
     native: queryNative,
     ...overrides,
   };
@@ -145,7 +156,8 @@ export function createStoragePermissions(overrides: Partial<PermissionDependenci
         try {
           const current = dependencies.lstat(native.path);
           if (
-            typeof native.ino === "string" && Number(native.ino) === current.ino &&
+            typeof native.ino === "string" &&
+            inoMatches(native.ino, dependencies.lstatBigint(native.path).ino) &&
             native.directory === current.isDirectory() &&
             typeof native.birthtimeMs === "number" && Math.abs(native.birthtimeMs - current.birthtimeMs) < 1 &&
             typeof native.mtimeMs === "number" && Math.abs(native.mtimeMs - current.mtimeMs) < 1 &&

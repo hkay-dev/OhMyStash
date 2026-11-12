@@ -1598,12 +1598,27 @@ function headline(text: string): string {
   return "(empty prompt)";
 }
 
+// Cuts at the stored limit (counted in UTF-16 units, as validation counts them) without
+// splitting a surrogate pair.
+export function cutUtf16Limit(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  let end = 0;
+  for (const char of text) {
+    if (end + char.length > limit) break;
+    end += char.length;
+  }
+  return text.slice(0, end);
+}
+
 function currentStashOrigin(ctx: ExtensionContext): StashOrigin {
   const sessionId = ctx.sessionManager.getSessionId();
   if (sessionId.length === 0 || sessionId.length > MAX_SESSION_ID_LENGTH) {
     throw new Error("OMP returned an invalid session ID");
   }
-  const sessionName = ctx.sessionManager.getSessionName()?.trim().slice(0, MAX_SESSION_NAME_LENGTH);
+  const sessionName = cutUtf16Limit(
+    ctx.sessionManager.getSessionName()?.trim() ?? "",
+    MAX_SESSION_NAME_LENGTH,
+  );
   const headerTimestamp = ctx.sessionManager.getHeader()?.timestamp;
   const startedAt = headerTimestamp === undefined ? undefined : new Date(headerTimestamp);
   const sessionStartedAt =
@@ -1612,10 +1627,7 @@ function currentStashOrigin(ctx: ExtensionContext): StashOrigin {
     startedAt.toISOString() === headerTimestamp
       ? headerTimestamp
       : undefined;
-  const workspaceName = (basename(resolve(ctx.cwd)) || "/").slice(
-    0,
-    MAX_WORKSPACE_NAME_LENGTH,
-  );
+  const workspaceName = cutUtf16Limit(basename(resolve(ctx.cwd)) || "/", MAX_WORKSPACE_NAME_LENGTH);
   return {
     sessionId,
     ...(sessionName ? { sessionName } : {}),
@@ -2523,11 +2535,12 @@ function showBrowser(
             const rightContentWidth = Math.max(1, rightWidth - 1);
             const model = entry ? previewModel(rightContentWidth)! : undefined;
             const desiredListRows = Math.min(12, Math.max(4, filteredEntries.length));
+            const headerRows = showOrigin ? 2 : 1;
             const desiredPreviewRows = model
-              ? Math.min(pluginConfig.maxBodyRows, Math.max(4, model.totalRows + 2))
+              ? Math.min(pluginConfig.maxBodyRows, Math.max(4, model.totalRows + headerRows))
               : 4;
             const bodyRows = Math.min(availableBodyRows, Math.max(desiredListRows, desiredPreviewRows));
-            previewRows = Math.max(1, bodyRows - 2);
+            previewRows = Math.max(1, bodyRows - headerRows);
             if (model) {
               previewOffset = Math.min(previewOffset, Math.max(0, model.totalRows - previewRows));
             } else {
@@ -2573,8 +2586,8 @@ function showBrowser(
                   );
                 } else if (row === 1 && showOrigin) {
                   right = theme.fg("dim", stashOriginDetails(entry.origin));
-                } else if (row > 1) {
-                  right = page[row - 2] ?? "";
+                } else if (row >= headerRows) {
+                  right = page[row - headerRows] ?? "";
                 }
               } else if (row === 0) {
                 right = theme.fg(

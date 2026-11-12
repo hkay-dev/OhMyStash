@@ -2203,3 +2203,12 @@ test("imports only the SDK modules compiled OMP serves to extensions", () => {
   }
   expect(unserved).toEqual([]);
 });
+
+test("cuts origin names at the limit without splitting a surrogate pair", async () => {
+  const { cutUtf16Limit } = await import("../extensions/prompt-stash.ts");
+  const text = `${"a".repeat(199)}😀tail`;
+  const cut = cutUtf16Limit(text, 200);
+  expect(cut).toBe("a".repeat(199));
+  expect(cutUtf16Limit(`${"a".repeat(198)}😀tail`, 200)).toBe(`${"a".repeat(198)}😀`);
+  expect(cutUtf16Limit("short", 200)).toBe("short");
+});
