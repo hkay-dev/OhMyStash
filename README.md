@@ -73,7 +73,7 @@ You can do quite a bit more in the browser:
 - **Locking.** Lock reusable stashes so deletion leaves them alone.
 - **Scoped deletion.** Delete one unlocked stash or clear unlocked stashes from the current browser scope.
 
-After an action, the browser reopens on the stash you were on, or on the same row once that stash is gone. If another OMP session changed a stash while your browser was open, OMS tells you, reloads, and leaves the other session's change alone.
+After an action, the browser reopens on the stash you were on, or on the same row once that stash is gone. The open browser shows stashes that another OMP session or Harrier adds, changes or deletes. If you act on one of them just as it changes, OMS tells you, reloads, and leaves the other session's change alone.
 
 ## More Features!
 

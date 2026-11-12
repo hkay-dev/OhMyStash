@@ -16,7 +16,9 @@ import {
   type Stats,
   unlinkSync,
   utimesSync,
+  watch,
   writeFileSync,
+  type FSWatcher,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1249,6 +1251,29 @@ function publishRecovery(dir: string, entry: StashEntry): string {
   return publishedName;
 }
 
+// A restore in Harrier or another session rewrites a stash only to advance usedAt. That changes
+// the revision but nothing a lock, edit or delete depends on, so it isn't a conflict. Returns
+// the newer usedAt when that's the only change in `current`.
+function advancedUsedAt(current: Buffer, entry: StashEntry): string | undefined {
+  const persisted = parsePersistedEntry(current.toString("utf8"));
+  if (
+    !persisted ||
+    persisted.usedAt === undefined ||
+    (entry.usedAt !== undefined && persisted.usedAt <= entry.usedAt) ||
+    persisted.id !== entry.id ||
+    persisted.text !== entry.text ||
+    persisted.inputMode !== entry.inputMode ||
+    persisted.stashedAt !== entry.stashedAt ||
+    persisted.locked !== entry.locked ||
+    persisted.preserved !== entry.preserved ||
+    JSON.stringify(persisted.attachments) !== JSON.stringify(entry.attachments) ||
+    JSON.stringify(persisted.origin) !== JSON.stringify(entry.origin)
+  ) {
+    return undefined;
+  }
+  return persisted.usedAt;
+}
+
 function replaceEntry(
   entry: StashEntry,
   text: string,
@@ -1264,19 +1289,18 @@ function replaceEntry(
       : `${entry.stashedAt.replaceAll(":", "-")}-${entry.id}.json`;
   const finalPath = join(dir, publishedName);
   const tempPath = join(dir, `.${entry.id}.tmp`);
-  const payload = `${JSON.stringify({
+  const serialize = (used: string | undefined) => `${JSON.stringify({
     id: entry.id,
     text,
     inputMode: entry.inputMode,
     stashedAt: entry.stashedAt,
-    ...(usedAt === undefined ? {} : { usedAt }),
+    ...(used === undefined ? {} : { usedAt: used }),
     origin: entry.origin,
     attachments,
     locked,
     preserved: entry.preserved,
   }, null, 2)}\n`;
-  const payloadBytes = Buffer.byteLength(payload, "utf8");
-  if (payloadBytes > MAX_ENTRY_FILE_BYTES) {
+  if (Buffer.byteLength(serialize(usedAt), "utf8") > MAX_ENTRY_FILE_BYTES) {
     throw new Error("Edited prompt is too large to persist safely");
   }
   let fd: number | undefined;
@@ -1291,8 +1315,12 @@ function replaceEntry(
       throw new EntryConflictError("Stash changed while it was being edited");
     }
     if (assetHash(current) !== entry.revision) {
-      throw new EntryConflictError("Stash changed while it was being edited");
+      const advanced = advancedUsedAt(current, entry);
+      if (advanced === undefined) throw new EntryConflictError("Stash changed while it was being edited");
+      if (usedAt === undefined || advanced > usedAt) usedAt = advanced;
     }
+    const payload = serialize(usedAt);
+    const payloadBytes = Buffer.byteLength(payload, "utf8");
     // Loading drops normal stashes past the metadata budget, so an edit must not grow past it.
     // A lock toggle only flips a flag and stays allowed, or a full store could never be unlocked
     // and cleaned up.
@@ -1418,7 +1446,7 @@ function removeEntry(entry: StashEntry, sync = true): boolean {
     const bytes = readFileSync(path);
     const persisted = parsePersistedEntry(bytes.toString("utf8"));
     if (!persisted) throw new Error("Selected OMS entry changed and cannot be deleted safely");
-    if (assetHash(bytes) !== entry.revision) {
+    if (assetHash(bytes) !== entry.revision && advancedUsedAt(bytes, entry) === undefined) {
       throw new EntryConflictError("Stash changed after the browser loaded");
     }
     if (persisted.locked) throw new Error("Locked stashes must be unlocked before deletion");
@@ -2105,7 +2133,7 @@ function filterStashEntries(
 
 function showBrowser(
   ctx: ExtensionContext,
-  entries: StashEntry[],
+  live: LiveEntries,
   initial: BrowserState,
   targets: SendTarget[],
 ): Promise<BrowserAction> {
@@ -2115,7 +2143,8 @@ function showBrowser(
       searchInput.prompt = "/";
       searchInput.setValue(initial.query);
       const currentSessionId = ctx.sessionManager.getSessionId();
-      const currentEntries = entries.filter((entry) => isCurrentChat(entry, currentSessionId));
+      let entries = live.entries;
+      let currentEntries = entries.filter((entry) => isCurrentChat(entry, currentSessionId));
       let scope = initial.scope;
       let scopedEntries = scope === "current" ? currentEntries : entries;
       let searching = false;
@@ -2164,6 +2193,19 @@ function showBrowser(
         }
         return previewCache.model;
       };
+      // Another session or Harrier changed the folder: show its stashes, on the same one if it's
+      // still there, and keep the search.
+      live.changed = () => {
+        const selectedId = selectedEntry()?.id;
+        entries = live.entries;
+        currentEntries = entries.filter((entry) => isCurrentChat(entry, currentSessionId));
+        scopedEntries = scope === "current" ? currentEntries : entries;
+        filteredEntries = filterStashEntries(scopedEntries, searchInput.getValue(), scope === "all");
+        const index = filteredEntries.findIndex((entry) => entry.id === selectedId);
+        if (index === -1) previewOffset = 0;
+        selected = index !== -1 ? index : Math.max(0, Math.min(selected, filteredEntries.length - 1));
+        tui.requestRender();
+      };
       const exitSearch = (clear: boolean) => {
         searching = false;
         searchInput.focused = false;
@@ -2203,6 +2245,9 @@ function showBrowser(
         if (entry) done({ type: "edit", entry, ...browserState(), tui });
       };
       return {
+        dispose() {
+          live.changed = undefined;
+        },
         invalidate() {
           previewCache = undefined;
           searchInput.invalidate();
@@ -2780,6 +2825,40 @@ async function toggleStash(ctx: ExtensionContext): Promise<void> {
 // Keys from one input batch all run before the first browser mounts, and a second mount strands it.
 const OPENING_BROWSERS = new WeakSet<object>();
 
+// The stashes an open browser shows. A watch on the stash folder replaces `entries` when another
+// session or Harrier changes a stash, then calls `changed` so the mounted browser redraws.
+type LiveEntries = { entries: StashEntry[]; changed?: () => void };
+const STASH_WATCH_DEBOUNCE_MS = 150;
+
+function watchEntries(live: LiveEntries): () => void {
+  const key = (entries: StashEntry[]) => entries.map((entry) => `${entry.fileName}:${entry.revision}`).join("\n");
+  let timer: NodeJS.Timeout | undefined;
+  const refresh = () => {
+    let next: StashEntry[];
+    try {
+      next = readStore(() => loadEntries().entries);
+    } catch {
+      return;
+    }
+    if (key(next) === key(live.entries)) return;
+    live.entries = next;
+    live.changed?.();
+  };
+  let watcher: FSWatcher | undefined;
+  try {
+    watcher = watch(stashDir(), { persistent: false }, () => {
+      clearTimeout(timer);
+      timer = setTimeout(refresh, STASH_WATCH_DEBOUNCE_MS);
+    });
+    // A folder that's gone or unreadable stops live updates; actions still reload as before.
+    watcher.on("error", () => watcher?.close());
+  } catch {}
+  return () => {
+    clearTimeout(timer);
+    watcher?.close();
+  };
+}
+
 async function browse(ctx: ExtensionContext): Promise<void> {
   if (!isMainTui(ctx) || OPENING_BROWSERS.has(ctx.ui)) return;
   OPENING_BROWSERS.add(ctx.ui);
@@ -2787,37 +2866,44 @@ async function browse(ctx: ExtensionContext): Promise<void> {
   // dialog displaced then stays reopenable.
   queueMicrotask(() => OPENING_BROWSERS.delete(ctx.ui));
   let state: BrowserState = { query: "", scope: "all", selectedIndex: 0 };
-  let entries = readStore(() => loadEntriesForUi(ctx));
-  const host = entries.length > 0 && !NATIVE_BROWSERS.has(ctx.ui) ? collectNativeHost(pluginEvents) : undefined;
-  if (host) {
-    NATIVE_BROWSERS.add(ctx.ui);
-    try {
-      if ((await browseNative(ctx, host, entries)) === "done") return;
-    } finally {
-      NATIVE_BROWSERS.delete(ctx.ui);
-    }
-  } else if (NATIVE_BROWSERS.has(ctx.ui)) {
-    // A native browser is already up and owns this opening.
+  const live: LiveEntries = { entries: readStore(() => loadEntriesForUi(ctx)) };
+  if (live.entries.length === 0) {
+    ctx.ui.notify("No stashed prompts", "info");
     return;
   }
-  while (true) {
-    if (entries.length === 0) {
-      ctx.ui.notify("No stashed prompts", "info");
-      return;
+  if (NATIVE_BROWSERS.has(ctx.ui)) return; // A native browser is already up and owns this opening.
+  const stopWatching = watchEntries(live);
+  try {
+    const host = collectNativeHost(pluginEvents);
+    if (host) {
+      NATIVE_BROWSERS.add(ctx.ui);
+      try {
+        if ((await browseNative(ctx, host, live)) === "done") return;
+      } finally {
+        NATIVE_BROWSERS.delete(ctx.ui);
+      }
     }
-    const action = await showBrowser(ctx, entries, state, collectSendTargets(pluginEvents));
-    if (!action) return;
-    const { query, scope, selectedId, selectedIndex } = action;
-    state = { query, scope, selectedId, selectedIndex };
-    try {
-      const next = await runBrowserAction(ctx, action, entries);
-      if (!next) return;
-      entries = next;
-    } catch (error) {
-      if (!(error instanceof EntryConflictError)) throw error;
-      ctx.ui.notify("That stash changed in another session, so OMS reloaded the browser", "warning");
-      entries = readStore(() => loadEntriesForUi(ctx));
+    while (true) {
+      if (live.entries.length === 0) {
+        ctx.ui.notify("No stashed prompts", "info");
+        return;
+      }
+      const action = await showBrowser(ctx, live, state, collectSendTargets(pluginEvents));
+      if (!action) return;
+      const { query, scope, selectedId, selectedIndex } = action;
+      state = { query, scope, selectedId, selectedIndex };
+      try {
+        const next = await runBrowserAction(ctx, action, live.entries);
+        if (!next) return;
+        live.entries = next;
+      } catch (error) {
+        if (!(error instanceof EntryConflictError)) throw error;
+        ctx.ui.notify("That stash changed in another session, so OMS reloaded the browser", "warning");
+        live.entries = readStore(() => loadEntriesForUi(ctx));
+      }
     }
+  } finally {
+    stopWatching();
   }
 }
 
@@ -2930,11 +3016,33 @@ function nativeBrowserSpec(
 async function browseNative(
   ctx: ExtensionContext,
   host: NativeUiHost,
-  initial: StashEntry[],
+  live: LiveEntries,
 ): Promise<"done" | "fallback"> {
-  let entries = initial;
   let state: BrowserState = { query: "", scope: "all", selectedIndex: 0 };
   let first = true;
+  // Waits for the user's next event. A folder change lists again with the same id, which updates
+  // the open list in place and keeps the user's search, scope and selection. The host then
+  // settles the earlier call, often as a cancel, so only the newest call's event counts.
+  const nextEvent = async (targets: SendTarget[]): Promise<NativeListEvent> => {
+    const { promise, resolve, reject } = Promise.withResolvers<NativeListEvent>();
+    let current: Promise<NativeListEvent> | undefined;
+    const list = (spec: NativeListSpec) => {
+      const call = host.list(spec);
+      current = call;
+      call.then(
+        (event) => call === current && resolve(event),
+        (error) => call === current && reject(error),
+      );
+    };
+    list(nativeBrowserSpec(ctx, live.entries, state, targets));
+    live.changed = () =>
+      list({ ...nativeBrowserSpec(ctx, live.entries, state, targets), query: undefined, selected: undefined, scope: undefined });
+    try {
+      return await promise;
+    } finally {
+      live.changed = undefined;
+    }
+  };
   const ui: BrowserActionUi = {
     confirmed: true,
     async editText(entry) {
@@ -2960,14 +3068,14 @@ async function browseNative(
   };
   try {
     while (true) {
-      if (entries.length === 0) {
+      if (live.entries.length === 0) {
         ctx.ui.notify("No stashed prompts", "info");
         return "done";
       }
       const targets = collectSendTargets(pluginEvents);
       let event: NativeListEvent;
       try {
-        event = await host.list(nativeBrowserSpec(ctx, entries, state, targets));
+        event = await nextEvent(targets);
       } catch (error) {
         if (first) return "fallback";
         throw error;
@@ -2976,16 +3084,16 @@ async function browseNative(
       const scope: BrowserScope = event.scope === "current" || event.scope === "all" ? event.scope : state.scope;
       state = { query: event.query, scope, selectedId: event.type === "action" ? event.item : state.selectedId, selectedIndex: 0 };
       if (event.type === "cancel") return "done";
-      const action = nativeBrowserAction(ctx, event.action, event.item, entries, state, targets);
+      const action = nativeBrowserAction(ctx, event.action, event.item, live.entries, state, targets);
       if (!action) continue;
       try {
-        const next = await runBrowserAction(ctx, action, entries, ui);
+        const next = await runBrowserAction(ctx, action, live.entries, ui);
         if (!next) return "done";
-        entries = next;
+        live.entries = next;
       } catch (error) {
         if (!(error instanceof EntryConflictError)) throw error;
         ctx.ui.notify("That stash changed in another session, so OMS reloaded the browser", "warning");
-        entries = readStore(() => loadEntriesForUi(ctx));
+        live.entries = readStore(() => loadEntriesForUi(ctx));
       }
     }
   } finally {

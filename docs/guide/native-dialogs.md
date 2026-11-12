@@ -48,6 +48,6 @@ Edit opens a text editor titled `Edit stashed prompt` with a `Save` button. Canc
 
 Delete asks first in the app's own dialog: `Delete stashed prompt?` with `Permanently delete “<headline>”?` and a Delete button. Delete unlocked asks `Delete unlocked stashes?`, says locked stashes are protected and that it ignores the current search, and can't be undone. The overlay's own confirmation isn't shown on top of these.
 
-A stash that changed in another OMP session while the dialog was open makes the dialog reload, with `That stash changed in another session, so OMS reloaded the browser`.
+When another OMP session or Harrier's Stash pane adds, edits, locks or deletes a stash, the open dialog updates in place and keeps your search, scope and selection. An action on a stash that changed in the instant before that update reloads the dialog with `That stash changed in another session, so OMS reloaded the browser`.
 
 If you write a terminal app plugin, see [for plugin authors](for-plugin-authors.md).

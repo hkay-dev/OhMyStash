@@ -108,4 +108,6 @@ Most actions close the browser, do their work and then open it again, so you can
 
 ## When another session changes a stash
 
-You may have more than one OMP session open. If another one changes or removes a stash while your browser is open, and you then act on that stash, OMS stops and shows `That stash changed in another session, so OMS reloaded the browser`. Nothing is overwritten: the action doesn't happen, the browser reloads the stashes from disk, and you can look at what's there now and try again.
+You may have more than one OMP session open, or Harrier's Stash pane. When one of them adds, edits, locks or deletes a stash while your browser is open, the browser shows the change within a moment and keeps your search and selection.
+
+If you act on a stash in the instant before that update, OMS stops and shows `That stash changed in another session, so OMS reloaded the browser`. Nothing is overwritten: the action doesn't happen, the browser reloads the stashes from disk, and you can look at what's there now and try again. A restore somewhere else only moves the stash's last-used time, so it never stops a lock or a delete.

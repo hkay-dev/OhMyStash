@@ -184,6 +184,36 @@ test("lock keeps the browser up and lists again with the same query, scope and s
   expect(host.closed).toEqual(["ohmystash.browser"]);
 });
 
+test("a stash added elsewhere lists again in place and the earlier call's cancel is ignored", async () => {
+  writeStash("first native");
+  let added: { id: string; path: string } | undefined;
+  let settleFirst: ((event: NativeListEvent) => void) | undefined;
+  const host = fakeHost([
+    () => {
+      // Harrier answers the open call with a cancel when the list is sent again with its id.
+      const { promise, resolve } = Promise.withResolvers<NativeListEvent>();
+      settleFirst = resolve;
+      added = writeStash("added elsewhere natively");
+      return promise;
+    },
+    () => {
+      settleFirst!({ type: "cancel", query: "nat", scope: "current" });
+      return { type: "action", action: "lock", item: added!.id, query: "nat", scope: "current" };
+    },
+    () => ({ type: "cancel", query: "nat", scope: "current" }),
+  ]);
+  useHost(host);
+  const { ctx } = context();
+  await stashCommand.handler("", ctx);
+  expect(host.specs).toHaveLength(3);
+  expect(host.specs[1]!.items.map((item) => item.id)).toContain(added!.id);
+  // The refresh leaves the user's search, scope and selection to the host.
+  expect(host.specs[1]!.query).toBeUndefined();
+  expect(host.specs[1]!.scope).toBeUndefined();
+  expect(host.specs[1]!.selected).toBeUndefined();
+  expect(JSON.parse(readFileSync(added!.path, "utf8")).locked).toBeTrue();
+});
+
 test("delete uses the host's confirmation instead of ctx.ui.confirm", async () => {
   const kept = writeStash("keep me");
   const gone = writeStash("delete me natively");

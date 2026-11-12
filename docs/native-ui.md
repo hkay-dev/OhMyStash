@@ -73,6 +73,10 @@ The stash browser uses:
 | `cmd+backspace` | Delete (unlocked stashes, confirmed) |
 | `cmd+shift+backspace` | Delete unlocked in this scope (confirmed) |
 
+## Live updates
+
+While a list waits for the user, OhMyStash watches the stash folder. When another session or app changes a stash, it calls `list` again with the same id and the new items, and leaves out `query`, `scope` and `selected` so the host keeps what the user typed, picked and selected. OhMyStash then takes the event from this newest call only, so the host may settle the earlier call any way it likes, such as with a cancel.
+
 ## Pending lists
 
 After an action without `close`, the dialog stays up but ignores input until the plugin calls `list` again with the same id, `edit`, or `close`. OhMyStash always does one of these right after the action runs. A host may close a list on its own when nothing comes for a few seconds.

@@ -1554,6 +1554,89 @@ test("reopens the browser on the stash it acted on, or on the same row once it's
   expect(readEntries().map((entry) => entry.text)).not.toContain("reselect bravo");
 });
 
+test("locks and deletes stashes whose last use another session advanced, without a conflict", async () => {
+  const [seed] = readEntries();
+  const other = writeStashFixture("bulk delete target");
+  const notifications: string[] = [];
+  // Rewrites a stash the way Harrier's restore does: only usedAt moves forward, in its own layout.
+  const markUsed = (path: string, offsetMs: number) => {
+    const payload = JSON.parse(readFileSync(path, "utf8"));
+    const usedAt = new Date(Date.now() + offsetMs).toISOString();
+    writeFileSync(path, `${JSON.stringify({ ...payload, usedAt }, null, 1)}\n`, { mode: 0o600 });
+    return usedAt;
+  };
+  let firstUse = "";
+  let usedAfterLock: string | undefined;
+  const openings = [
+    () => { firstUse = markUsed(other.path, 1000); return "l"; },
+    () => { usedAfterLock = JSON.parse(readFileSync(other.path, "utf8")).usedAt; return "l"; },
+    () => { markUsed(other.path, 2000); return "d"; },
+    () => { markUsed(seed!.path, 3000); return "D"; },
+  ];
+  let opened = 0;
+  const context = {
+    cwd: agentDir,
+    mode: "tui",
+    agent: MAIN_AGENT,
+    sessionManager: TEST_SESSION_MANAGER,
+    ui: {
+      custom(factory: Function) {
+        const { promise, resolve } = Promise.withResolvers<unknown>();
+        const component = browserComponent(factory, resolve);
+        component.handleInput(openings[opened++]?.() ?? "\u001b");
+        return promise;
+      },
+      confirm: () => Promise.resolve(true),
+      getEditorText: () => "",
+      notify(message: string) {
+        notifications.push(message);
+      },
+    },
+  } as unknown as ExtensionContext;
+
+  await stashCommand.handler("", context);
+  expect(usedAfterLock).toBe(firstUse);
+  expect(notifications).toEqual([
+    "Stash locked",
+    "Stash unlocked",
+    "Deleted stashed prompt",
+    "Deleted 1 unlocked stashed prompt; 0 locked protected",
+    "No stashed prompts",
+  ]);
+  expect(readEntries()).toEqual([]);
+});
+
+test("shows a stash another session adds while the browser is open", async () => {
+  let component: { render(width: number): string[]; handleInput(data: string): void } | undefined;
+  const context = {
+    cwd: agentDir,
+    mode: "tui",
+    agent: MAIN_AGENT,
+    sessionManager: TEST_SESSION_MANAGER,
+    ui: {
+      custom(factory: Function) {
+        const { promise, resolve } = Promise.withResolvers<unknown>();
+        component = browserComponent(factory, resolve);
+        return promise;
+      },
+      getEditorText: () => "",
+      notify() {},
+    },
+  } as unknown as ExtensionContext;
+
+  const browsing = stashCommand.handler("", context);
+  const frame = () => component?.render(120).join("\n") ?? "";
+  for (let tries = 0; !component && tries < 40; tries += 1) await Bun.sleep(25);
+  expect(frame()).not.toContain("added elsewhere");
+  writeStashFixture("added elsewhere");
+  // The refresh comes from the OS's folder watch, which fake timers can't drive, so poll for it.
+  for (let tries = 0; !frame().includes("added elsewhere") && tries < 40; tries += 1) await Bun.sleep(50);
+  expect(frame()).toContain("added elsewhere");
+  expect(frame()).toContain("test prompt");
+  component!.handleInput("\u001b");
+  await browsing;
+});
+
 test("expires only old unlocked normal stashes", async () => {
   const stashDir = join(agentDir, "prompt-stash");
   const expiredAt = new Date(Date.now() - 2 * 86_400_000).toISOString();
