@@ -15,7 +15,7 @@ To use them, add OhMyStash as a package dependency of your plugin, for example `
   - `selected`: the option to select when the picker opens. If it isn't one of the options, the first one is selected.
 - `showList(ctx, options)` opens a searchable list of any items in the overlay. It resolves to the result of the footer action that closed it, or `undefined` when Esc, Ctrl+C, or the optional `toggleKey` closes it.
 - `createList(tui, theme, options, done)` returns the same list as a component, for a plugin that shows it inside its own overlay component. Its `select(item)` moves the selection.
-- `formatShortcut(key, { icons })` formats an OMP key id such as `alt+shift+s`. By default it draws Nerd Font Apple keyboard icons in macOS menu order, separated by spaces. With `icons: false` it gives plain text such as `Alt+Shift+S`. A blank key or `none` gives an empty string.
+- `formatShortcut(key, { icons })` formats an OMP key id such as `alt+shift+s`. On macOS it draws Nerd Font Apple keyboard icons in macOS menu order, separated by spaces; on other systems it writes `Ctrl`, `Alt` and `Super` as words joined with `+`, as OMP does. With `icons: false` it gives plain text such as `Alt+Shift+S` (`Cmd` on macOS, `Super` elsewhere). `cmd`, `opt`, `option` and `control` count as `super`, `alt`, `alt` and `ctrl`. A blank key, `none`, or a key with a modifier it doesn't know gives an empty string.
 - `formatShortcutRange(keys, { icons })` formats several keys and skips blank and `none` keys. Three or more keys with the same modifiers and consecutive digits collapse into one range, such as `Alt+1-5`.
 - `ShortcutHintDeclaration` types one entry of the `hkay.shortcutHints` package field described below.
 

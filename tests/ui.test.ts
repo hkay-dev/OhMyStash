@@ -765,3 +765,64 @@ test("selectOption drops its glyphs without icons and opens on the selected opti
   expect(iconLines[1]).toStartWith(`│ ${SEARCH} `);
   expect(iconLines.find((line) => line.includes(" > "))).toStartWith("│ > Option 00");
 });
+
+function onPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...original, value: platform });
+  try {
+    return run();
+  } finally {
+    Object.defineProperty(process, "platform", original);
+  }
+}
+
+test("formatShortcut reads cmd, opt, option, and control as their modifiers", () => {
+  const plain = (key: string) => formatShortcut(key, { icons: false });
+  expect(onPlatform("darwin", () => formatShortcut("cmd+s"))).toBe(`${CMD} S`);
+  expect(onPlatform("darwin", () => plain("cmd+s"))).toBe("Cmd+S");
+  expect(onPlatform("darwin", () => plain("opt+s"))).toBe("Alt+S");
+  expect(onPlatform("darwin", () => plain("option+shift+s"))).toBe("Alt+Shift+S");
+  expect(onPlatform("darwin", () => plain("control+s"))).toBe("Ctrl+S");
+  expect(onPlatform("darwin", () => plain("cmd"))).toBe("Cmd");
+});
+
+test("formatShortcut returns nothing for an unknown modifier instead of dropping it", () => {
+  expect(formatShortcut("hyper+s")).toBe("");
+  expect(formatShortcut("ctrl+hyper+s", { icons: false })).toBe("");
+  expect(formatShortcutRange(["hyper+1", "alt+2"], { icons: false })).toBe("Alt+2");
+});
+
+test("formatShortcut uses Ctrl, Alt, and Super words off macOS", () => {
+  onPlatform("linux", () => {
+    expect(formatShortcut("super+shift+alt+ctrl+s", { icons: false })).toBe("Ctrl+Alt+Shift+Super+S");
+    expect(formatShortcut("alt+s", { icons: false })).toBe("Alt+S");
+    expect(formatShortcut("cmd+s", { icons: false })).toBe("Super+S");
+    expect(formatShortcut("ctrl+alt+shift+s")).toBe(`Ctrl+Alt+${SHIFT} S`);
+    expect(formatShortcut("alt+shift+s")).not.toContain(ALT);
+  });
+});
+
+test("selectOption pages by the terminal's current rows after a resize", async () => {
+  const options = Array.from({ length: 40 }, (_, index) => `Option ${String(index).padStart(2, "0")}`);
+  const tui = fakeTui(24);
+  const picker = mountPicker(selectOption, tui, options);
+  picker.component.render(80);
+  tui.terminal.rows = 10;
+  picker.component.handleInput(KEY.pageDown);
+  picker.component.handleInput(KEY.enter);
+  await Promise.resolve();
+  expect(picker.outcome).toEqual({ closed: true, value: "Option 05" });
+});
+
+test("a list never draws more rows than a short terminal has", () => {
+  for (let rows = 1; rows <= 10; rows += 1) {
+    const { list } = openList(fileOptions(files(20)), rows);
+    expect(list.render(60).length).toBeLessThanOrEqual(rows);
+    const two = openList(fileOptions(files(20), { renderItem: twoRows }), rows).list;
+    expect(two.render(60).length).toBeLessThanOrEqual(rows);
+  }
+  const { list } = openList(fileOptions(files(20)), 6);
+  const lines = list.render(60);
+  expect(lines[0]).toStartWith("┌ Files");
+  expect(lines[1]).toContain("File or folder");
+});

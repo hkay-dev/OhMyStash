@@ -74,18 +74,36 @@ export interface ShortcutHintDeclaration {
   command?: string;
 }
 
-// Key labels after formatKey in @oh-my-pi/pi-tui 18.10.3 src/key-hint-format.ts, which compiled OMP
-// doesn't serve to plugins. Icons always come from the Nerd Font preset's Apple keyboard icons, whatever
-// preset the theme uses, because the Unicode keycaps (⌥⇧S) are hard to read at terminal font sizes.
-// Modifiers are in macOS menu order (⌃⌥⇧⌘), which is how they render whatever order a key lists them in.
+// Key labels after formatKey in @oh-my-pi/pi-tui 18.19.0 src/key-hint-format.ts, which compiled OMP
+// doesn't serve to plugins. Icons always come from the Nerd Font preset, whatever preset the theme uses,
+// because the Unicode keycaps (⌥⇧S) are hard to read at terminal font sizes. Like OMP, only macOS gets the
+// Apple keycap icons (⌃⌥⌘) and Cmd; other platforms get Ctrl, Alt and Super, since those glyphs name no key on
+// a PC keyboard. Shift is ⇧ everywhere. Modifiers are in macOS menu order (⌃⌥⇧⌘), which is how they render
+// whatever order a key lists them in.
 type KeyLabel = readonly [icon: string, text: string];
 const nerd = SYMBOL_PRESETS.nerd;
-const MODIFIER_LABELS: Record<string, KeyLabel> = {
+const MAC_MODIFIER_LABELS: Record<string, KeyLabel> = {
   ctrl: [nerd["key.ctrlMac"], "Ctrl"],
   alt: [nerd["key.altMac"], "Alt"],
   shift: [nerd["key.shift"], "Shift"],
   super: [nerd["key.superMac"], "Cmd"],
 };
+const PC_MODIFIER_LABELS: Record<string, KeyLabel> = {
+  ctrl: [nerd["key.ctrl"], "Ctrl"],
+  alt: [nerd["key.alt"], "Alt"],
+  shift: [nerd["key.shift"], "Shift"],
+  super: [nerd["key.super"], "Super"],
+};
+const modifierLabels = (): Record<string, KeyLabel> =>
+  process.platform === "darwin" ? MAC_MODIFIER_LABELS : PC_MODIFIER_LABELS;
+// Other spellings of a modifier that parseShortcut accepts.
+const MODIFIER_ALIASES: Record<string, string> = {
+  control: "ctrl",
+  opt: "alt",
+  option: "alt",
+  cmd: "super",
+};
+const HAS_LETTER = /[A-Za-z0-9]/;
 const KEY_LABELS: Record<string, KeyLabel> = {
   esc: [nerd["key.esc"], "Esc"],
   escape: [nerd["key.esc"], "Esc"],
@@ -108,25 +126,32 @@ const KEY_LABELS: Record<string, KeyLabel> = {
 
 type Shortcut = { modifiers: KeyLabel[]; base: string; chord: boolean };
 
+// Undefined for a blank key, `none`, or a key with a modifier that isn't ctrl, alt, shift, super, or an alias.
 function parseShortcut(key: string): Shortcut | undefined {
   const id = key.trim().toLowerCase();
   if (!id || id === "none") return undefined;
   // A trailing `+` is the plus key itself (`+`, `ctrl++`), not a separator.
   const parts = id.endsWith("+") ? [...id.slice(0, -1).split("+").slice(0, -1), "+"] : id.split("+");
-  const base = parts.pop() ?? "";
-  const modifiers = Object.entries(MODIFIER_LABELS).filter(([name]) => parts.includes(name)).map(([, label]) => label);
+  const canonical = (name: string): string => (Object.hasOwn(MODIFIER_ALIASES, name) ? MODIFIER_ALIASES[name]! : name);
+  const labels = modifierLabels();
+  const base = canonical(parts.pop() ?? "");
+  const names = parts.map(canonical);
+  if (names.some((name) => !Object.hasOwn(labels, name))) return undefined;
+  const modifiers = Object.entries(labels).filter(([name]) => names.includes(name)).map(([, label]) => label);
   return { modifiers, base, chord: parts.length > 0 };
 }
 
 function shortcutLabel({ modifiers, base, chord }: Shortcut, icons: boolean): string {
   const which = icons ? 0 : 1;
   // Own keys only, so a key named like an Object.prototype member, such as `constructor`, isn't a label.
-  const named = Object.hasOwn(MODIFIER_LABELS, base) ? MODIFIER_LABELS[base]
+  const labels = modifierLabels();
+  const named = Object.hasOwn(labels, base) ? labels[base]
     : Object.hasOwn(KEY_LABELS, base) ? KEY_LABELS[base]
     : undefined;
   // A bare letter stays lowercase, since Q would read as Shift+Q; in a chord it is capitalized.
   const last = named ? named[which] : base.length === 1 && !chord ? base : base.charAt(0).toUpperCase() + base.slice(1);
-  const text = [...modifiers.map((label) => label[which]), last].join(icons ? " " : "+");
+  // An icon is followed by a space; a word, such as Ctrl on a PC, by a plus.
+  const text = [...modifiers.map((label) => `${label[which]}${icons && !HAS_LETTER.test(label[which]) ? " " : "+"}`), last].join("");
   return stripVTControlCharacters(text).replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
 }
 
@@ -266,9 +291,13 @@ function listComponent<T, R>(
   options: ListOptions<T, R>,
   done: (result: R | undefined) => void,
   layout: ListLayout<T>,
-  pageSize: number,
+  // Rows that PgUp and PgDn move before the first render. A function is asked again on every key, so a
+  // resize changes the step; a number is replaced by what each render reports.
+  initialPageSize: number | (() => number),
   terminalCursor: boolean,
 ): ListComponent<T> {
+  let drawnPageSize = typeof initialPageSize === "number" ? initialPageSize : 1;
+  const pageSize = (): number => (typeof initialPageSize === "function" ? initialPageSize() : drawnPageSize);
   const input = new Input();
   input.prompt = "";
   input.focused = true;
@@ -375,8 +404,8 @@ function listComponent<T, R>(
         : matchesKey(data, Key.down) ? list.index + 1
         : matchesKey(data, Key.home) ? 0
         : matchesKey(data, Key.end) ? list.matches.length - 1
-        : matchesKey(data, Key.pageUp) ? list.index - pageSize
-        : matchesKey(data, Key.pageDown) ? list.index + pageSize
+        : matchesKey(data, Key.pageUp) ? list.index - pageSize()
+        : matchesKey(data, Key.pageDown) ? list.index + pageSize()
         : undefined;
       if (target === undefined) {
         const before = input.getValue();
@@ -393,7 +422,7 @@ function listComponent<T, R>(
     },
     render(width: number) {
       const drawn = layout(view(), width);
-      pageSize = drawn.pageSize;
+      drawnPageSize = drawn.pageSize;
       return drawn.lines;
     },
   };
@@ -614,7 +643,7 @@ export function selectOption(
       actions: [{ key: "enter", label: "Select", run: (option) => option }],
       ...(settings?.selected === undefined ? {} : { selected: settings.selected }),
     };
-    const pageSize = Math.max(1, Math.min(12, tui.terminal.rows - 5));
+    const pageSize = () => Math.max(1, Math.min(12, tui.terminal.rows - 5));
     return listComponent(tui, theme, list, done, (view, width) => drawOptions(popupTitle, view, width, icons), pageSize, false);
   }, OVERLAY_OPTIONS);
 }
