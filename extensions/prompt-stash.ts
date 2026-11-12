@@ -3101,6 +3101,7 @@ async function browseNative(
       return { text: edited };
     },
     async pickTarget(labels) {
+      let cancelled = false;
       try {
         const event = await host.list({
           id: NATIVE_SEND_ID,
@@ -3108,16 +3109,21 @@ async function browseNative(
           items: labels.map((label, index) => ({ id: String(index), title: label })),
           actions: [{ id: "send", label: "Send", key: "enter", close: true }],
         });
-        return event.type === "action" && event.item !== undefined ? labels[Number(event.item)] : undefined;
+        if (event.type !== "action" || event.item === undefined) {
+          cancelled = true;
+          return undefined;
+        }
+        return labels[Number(event.item)];
       } finally {
-        await host.close(NATIVE_SEND_ID);
+        // On cancel the browser's next list replaces this one, so the window never closes between them.
+        if (!cancelled) await host.close(NATIVE_SEND_ID);
       }
     },
   };
   try {
     while (true) {
       if (live.entries.length === 0) {
-        ctx.ui.notify("No stashed prompts", "info");
+        if (first) ctx.ui.notify("No stashed prompts", "info");
         return "done";
       }
       const targets = collectSendTargets(pluginEvents);

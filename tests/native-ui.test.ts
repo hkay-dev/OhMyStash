@@ -345,3 +345,12 @@ test("a host that fails after an action closes the browser without an error", as
   expect(state.notices).toEqual(["Stash locked"]);
   expect(host.closed).toEqual(["ohmystash.browser"]);
 });
+
+test("deleting the last stash shows no empty toast", async () => {
+  const { id } = writeStash("only one");
+  const host = fakeHost([() => ({ type: "action", action: "delete", item: id, query: "", scope: "all" })]);
+  useHost(host);
+  const { ctx, state } = context();
+  await stashCommand.handler("", ctx);
+  expect(state.notices).toEqual(["Deleted stashed prompt"]);
+});
