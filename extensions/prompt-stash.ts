@@ -3234,6 +3234,12 @@ export default async function promptStash(pi: ExtensionAPI): Promise<void> {
     handler: async (args, ctx) =>
       run(ctx, async () => {
         const command = args.trim();
+        // RPC hosts such as Harrier can't show the browser or fill the composer, so say so
+        // instead of returning silently.
+        if (ctx.agent.kind === "main" && ctx.mode !== "tui" && (command === "" || command === "restore")) {
+          ctx.ui.notify("/stash needs the OMP terminal UI. Pick stashes from Harrier's Stash pane instead", "warning");
+          return;
+        }
         if (command === "") return browse(ctx);
         if (command === "restore") return restoreLatest(ctx);
         ctx.ui.notify("Usage: /stash or /stash restore", "warning");
