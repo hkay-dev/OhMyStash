@@ -142,10 +142,16 @@ beforeAll(async () => {
     editorCommand.mockRestore();
     editor.mockRestore();
   };
-  const { default: promptStash } = await import("../extensions/prompt-stash.ts");
+  const { default: promptStash, startupScanSettled } = await import("../extensions/prompt-stash.ts");
   await promptStash({
     on(event: string, handler: typeof refreshConfig) {
-      if (event === "session_start") refreshConfig = handler;
+      // OMP does not wait for the deferred retention scan, so tests wait for it here.
+      if (event === "session_start") {
+        refreshConfig = async (...args) => {
+          await handler(...args);
+          await startupScanSettled();
+        };
+      }
     },
     registerShortcut() {},
     registerCommand(name: string, command: typeof stashCommand) {

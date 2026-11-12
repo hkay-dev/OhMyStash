@@ -156,11 +156,18 @@ beforeAll(async () => {
     "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller"
   ));
   ({ OVERLAY_OPTIONS, selectOption } = await import("../extensions/ui"));
-  ({ default: loadPlugin } = await import("../extensions/prompt-stash.ts"));
+  let startupScanSettled: () => Promise<void>;
+  ({ default: loadPlugin, startupScanSettled } = await import("../extensions/prompt-stash.ts"));
   await loadPlugin({
     events: bus,
     on(event: string, handler: typeof sessionStart) {
-      if (event === "session_start") sessionStart = handler;
+      // OMP does not wait for the deferred retention scan, so tests wait for it here.
+      if (event === "session_start") {
+        sessionStart = async (...args) => {
+          await handler(...args);
+          await startupScanSettled();
+        };
+      }
     },
     registerShortcut(_key: string, shortcut: { handler: Handler }) {
       shortcuts.push(shortcut.handler);

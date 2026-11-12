@@ -59,6 +59,7 @@ const CONFIG_CONTEXT = {
 let stashCommand: { handler: (args: string, ctx: ExtensionContext) => Promise<void> | void };
 let stashShortcut: { handler: (ctx: ExtensionContext) => Promise<void> | void };
 let refreshConfig: ((event: unknown, ctx: ExtensionContext) => Promise<void>) | undefined;
+let switchSession: ((event: unknown, ctx: ExtensionContext) => Promise<void>) | undefined;
 const TEST_THEME = {
   isLight: false,
   getFgAnsi: () => "\u001b[38;2;200;200;200m",
@@ -149,10 +150,17 @@ beforeAll(async () => {
   ({ createFrame, extensionIcon, selectOption } = await import("../extensions/ui"));
   writeSettings({ "Time format": "12-hour clock" });
   // Import after setting the agent-dir override so the test never touches the user's stash.
-  const { default: promptStash } = await import("../extensions/prompt-stash.ts");
+  const { default: promptStash, startupScanSettled } = await import("../extensions/prompt-stash.ts");
+  // OMP does not wait for the deferred retention scan, so tests wait for it here.
+  const settled = (handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) =>
+    async (event: unknown, ctx: ExtensionContext) => {
+      await handler(event, ctx);
+      await startupScanSettled();
+    };
   const api = {
     on(event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) {
-      if (event === "session_start") refreshConfig = handler;
+      if (event === "session_start") refreshConfig = settled(handler);
+      if (event === "session_switch") switchSession = settled(handler);
     },
     registerShortcut(key: string, shortcut: typeof stashShortcut) {
       if (key === "alt+s") stashShortcut = shortcut;
@@ -2211,4 +2219,64 @@ test("cuts origin names at the limit without splitting a surrogate pair", async 
   expect(cut).toBe("a".repeat(199));
   expect(cutUtf16Limit(`${"a".repeat(198)}😀tail`, 200)).toBe(`${"a".repeat(198)}😀`);
   expect(cutUtf16Limit("short", 200)).toBe("short");
+});
+
+test("skips an identical save inside 500 ms but saves different text", async () => {
+  const sessionId = randomUUID();
+  let editor!: CustomEditor;
+  const context = {
+    cwd: agentDir, mode: "tui", agent: MAIN_AGENT,
+    sessionManager: { ...TEST_SESSION_MANAGER, getSessionId: () => sessionId },
+    ui: {
+      setEditorComponent(factory: Function) {
+        editor = factory({}, { symbols: {}, borderColor: (text: string) => text }, {});
+      },
+      getEditorText: () => editor.getText(),
+      notify() {},
+    },
+  } as unknown as ExtensionContext;
+  const saved = () => readEntries().filter((entry) => (entry as any).origin?.sessionId === sessionId);
+  await refreshConfig?.({}, context);
+  editor.setDraft("double trigger", []);
+  await stashShortcut.handler(context);
+  expect(saved()).toHaveLength(1);
+  // The same bytes arrive again before the first trigger's result is visible.
+  editor.setDraft("double trigger", []);
+  await stashShortcut.handler(context);
+  expect(saved()).toHaveLength(1);
+  expect(editor.getText()).toBe("");
+  editor.setDraft("different text", []);
+  await stashShortcut.handler(context);
+  expect(saved().map((entry) => entry.text).sort()).toEqual(["different text", "double trigger"]);
+});
+
+test("session_switch reloads settings from the new cwd", async () => {
+  const other = mkdtempSync(join(tmpdir(), "prompt-stash-switch-"));
+  const notifications: string[] = [];
+  let editor = "";
+  const context = (cwd: string) => ({
+    cwd, mode: "tui", agent: MAIN_AGENT, sessionManager: TEST_SESSION_MANAGER,
+    ui: {
+      setEditorComponent() {},
+      getEditorText: () => editor,
+      setEditorText(value: string) { editor = value; },
+      notify(message: string) { notifications.push(message); },
+    },
+  }) as unknown as ExtensionContext;
+  try {
+    mkdirSync(join(other, ".omp"), { recursive: true });
+    writeFileSync(
+      join(other, ".omp", "plugin-overrides.json"),
+      JSON.stringify({ settings: { "@hkay-dev/ohmystash": { "Time format": "24-hour clock" } } }),
+    );
+    await stashCommand.handler("restore", context(agentDir));
+    expect(notifications.at(-1)).toMatch(/\b(?:AM|PM)\b/i);
+    await switchSession?.({}, context(other));
+    editor = "";
+    await stashCommand.handler("restore", context(agentDir));
+    expect(notifications.at(-1)).not.toMatch(/\b(?:AM|PM)\b/i);
+  } finally {
+    rmSync(other, { recursive: true, force: true });
+    await refreshConfig?.({}, CONFIG_CONTEXT);
+  }
 });

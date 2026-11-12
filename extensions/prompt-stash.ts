@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -258,7 +258,20 @@ function boundedNumber(value: unknown, fallback: number, min: number, max: numbe
     : fallback;
 }
 
-async function loadPluginConfig(cwd: string): Promise<PromptStashConfig> {
+// In-process subagents (up to 32) load this module at once; one settings read per cwd serves them
+// all. session_start and session_switch pass `fresh` so the main session always rereads.
+const CONFIG_LOADS = new Map<string, Promise<PromptStashConfig>>();
+
+async function loadPluginConfig(cwd: string, fresh = false): Promise<PromptStashConfig> {
+  let load = fresh ? undefined : CONFIG_LOADS.get(cwd);
+  if (!load) {
+    load = readPluginConfig(cwd);
+    CONFIG_LOADS.set(cwd, load);
+  }
+  return { ...(await load) };
+}
+
+async function readPluginConfig(cwd: string): Promise<PromptStashConfig> {
   try {
     const raw = await getPluginSettings(PLUGIN_NAME, cwd);
     const layoutValue = raw["Browser layout"];
@@ -1996,6 +2009,8 @@ function restoreIntoComposer(
   entry: StashEntry,
   options: { forceQueue?: boolean; links?: boolean } = {},
 ): AttachmentFailure[] {
+  // A restore followed by a stash is a new save, even when the text is the same.
+  lastSave = undefined;
   const prefix = options.forceQueue || entry.inputMode === "queue" ? "/queue " : "";
   const editor = activeEditor(ctx);
   if (!editor) {
@@ -2744,6 +2759,17 @@ function notifyRestored(ctx: ExtensionContext, summary: string, failures: Attach
   else ctx.ui.notify(`${summary}, but couldn't restore ${describeFailures(failures)}`, "warning");
 }
 
+// An identical save from the same chat inside this window is one double trigger, not two stashes.
+const DUPLICATE_SAVE_WINDOW_MS = 500;
+let lastSave: { key: string; at: number } | undefined;
+
+function saveKey(sessionId: string, composer: ComposerDraft): string {
+  const hash = createHash("sha256");
+  hash.update(JSON.stringify([sessionId, composer.draft.inputMode, composer.draft.text]));
+  for (const image of composer.images) hash.update(`\0${image.mimeType}\0${image.data}`);
+  return hash.digest("hex");
+}
+
 async function stashCurrent(ctx: ExtensionContext): Promise<void> {
   const composer = readComposerDraft(ctx);
   if (composer.draft.text.length === 0 && composer.images.length === 0) {
@@ -2751,6 +2777,11 @@ async function stashCurrent(ctx: ExtensionContext): Promise<void> {
     return;
   }
   const origin = currentStashOrigin(ctx);
+  const key = saveKey(origin.sessionId, composer);
+  if (lastSave?.key === key && Date.now() - lastSave.at < DUPLICATE_SAVE_WINDOW_MS) {
+    clearEditorAfterStash(ctx, composer.draft.inputMode);
+    return;
+  }
   const fileBacked = composer.images.length > 0 || Buffer.byteLength(composer.draft.text, "utf8") > MAX_PROMPT_BYTES;
   const { draft, repeated } = inStore(true, () => {
     const captured: CapturedDraft = fileBacked ? persistDraftAttachments(composer) : { ...composer.draft, attachments: [] };
@@ -2775,6 +2806,7 @@ async function stashCurrent(ctx: ExtensionContext): Promise<void> {
     saveEntry(captured.text, captured.inputMode, captured.attachments, origin);
     return { draft: captured, repeated: false };
   }, fileBacked);
+  lastSave = { key, at: Date.now() };
   clearEditorAfterStash(ctx, draft.inputMode);
   const label = draft.inputMode === "queue" ? "Queue prompt" : "Prompt";
   if (repeated) {
@@ -3374,23 +3406,33 @@ function isMainTui(ctx: ExtensionContext): boolean {
   return ctx.agent.kind === "main" && ctx.mode === "tui";
 }
 
+// Resolves once the retention scan that the latest session_start or session_switch scheduled has run.
+let startupScan: Promise<void> = Promise.resolve();
+export function startupScanSettled(): Promise<void> {
+  return startupScan;
+}
+
 export default async function promptStash(pi: ExtensionAPI): Promise<void> {
   // Registration reads its own copy of the settings, so a subagent's load can't change the main
   // session's.
   const config = await loadPluginConfig(process.cwd());
 
-  pi.on("session_start", async (_event, ctx) => {
+  // /resume can move the session to another cwd, so both events reread that cwd's settings.
+  const startSession = async (ctx: ExtensionContext) => {
     if (!isMainTui(ctx)) return;
     pluginEvents = pi.events;
-    pluginConfig = await loadPluginConfig(ctx.cwd);
+    pluginConfig = await loadPluginConfig(ctx.cwd, true);
     installEditorBridge(ctx);
     warmStoragePermissions();
     if (pluginConfig.retentionDays > 0) {
-      await run(ctx, async () => {
-        loadEntries();
+      // The scan reads every stash file synchronously, so it runs after OMP finishes starting.
+      startupScan = new Promise<void>((done) => {
+        setTimeout(() => void run(ctx, async () => void loadEntries()).finally(done), 0);
       });
     }
-  });
+  };
+  pi.on("session_start", (_event, ctx) => startSession(ctx));
+  pi.on("session_switch", (_event, ctx) => startSession(ctx));
   pi.on("session_shutdown", (_event, ctx) => {
     if (isMainTui(ctx)) stopStoragePermissions();
   });

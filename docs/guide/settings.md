@@ -72,7 +72,7 @@ Deletes old stashes after this many days. `0` keeps them forever.
 
 The days count from the last time you stashed or restored a prompt, so a stash you keep reusing doesn't expire. Restoring, popping a stash that stays because it's locked, sending it to another plugin and stashing the same prompt again all count as use.
 
-Retention removes only stashes that are expired, unlocked and normal. Locked stashes, conflict copies and recovery entries never expire. It runs when OhMyStash loads your stashes, which includes the start of each new session when retention is on. When it deletes a stash, attachments nothing else uses are cleaned up too. See [Where stashes live](storage.md).
+Retention removes only stashes that are expired, unlocked and normal. Locked stashes, conflict copies and recovery entries never expire. It runs when OhMyStash loads your stashes, which includes a moment after each new or resumed session starts when retention is on. When it deletes a stash, attachments nothing else uses are cleaned up too. See [Where stashes live](storage.md).
 
 ### Show icons
 
