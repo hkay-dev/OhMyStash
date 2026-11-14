@@ -18,7 +18,7 @@
     "url": "git+https://github.com/hkay-dev/OhMyStash.git"
   },
   "scripts": {
-    "check": "$HOME/Development/workspaces/armada/bin/omp-plugin-check . -- --timeout 60000 ./tests",
+    "check": "omp-plugin-check . -- --timeout 60000 ./tests",
     "test": "bun test --timeout 60000 ./tests",
     "build:windows": "pwsh -NoLogo -NoProfile -File extensions/build-storage-worker.ps1",
     "benchmark:cross-chat": "bun run benchmarks/cross-chat.ts",
