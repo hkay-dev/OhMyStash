@@ -27,7 +27,7 @@ Shared Foundry rules, written by `foundry app sync-agents` from apps.yml (change
 
 - Check: `./repo/scripts/check.sh` from `~/Development/core/ohmystash` (`foundry app check ohmystash` runs it).
 - Before starting or stopping a local dev server, read `~/.agents/PORTHOLE.md` and `~/.agents/WHATTHEPORT.md`. Use `devup <name> --desc "..." -- <command>`.
-- If this project sends Harsha any notification (a job, hook, daemon or app), send it through `notify` or `flare-send`, never Telegram directly. Follow `flare-send guide standard` for the title and description, use a template where the data has structure, and register the sender once: `flare-send apps set <source> --name <Name> --owner <path> [--template T]`.
+- If this project sends Harsha any notification (a job, hook, daemon or app), send it through `notify` or `flare-send`, never Telegram directly. Write its title, body and card as Flare's Rich notifications guide (`~/Development/core/flare/repo/docs/guide/rich-notifications.md`) says, and send a card with `flare-send --json < payload.json` where the data has structure.
 
 App facts:
 
