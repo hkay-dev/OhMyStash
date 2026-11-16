@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#353b46"/>
+      <stop offset="1" stop-color="#1c1f25"/>
+    </linearGradient>
+    <linearGradient id="win" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff8a72"/>
+      <stop offset="1" stop-color="#ee5a4f"/>
+    </linearGradient>
+  </defs>
+  <g id="background">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <ellipse cx="512" cy="110" rx="640" ry="300" fill="#fff" opacity="0.05"/>
+  </g>
+  <g id="foreground">
+    <rect x="200" y="250" width="624" height="524" rx="76" fill="url(#win)"/>
+    <path d="M276 250 H748 Q824 250 824 326 V346 H200 V326 Q200 250 276 250 Z" fill="#fff" opacity="0.16"/>
+    <path d="M300 470 L392 532 L300 594" fill="none" stroke="#fff8f4" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M444 594 H568" fill="none" stroke="#fff8f4" stroke-width="46" stroke-linecap="round"/>
+    <path d="M640 214 H744 V420 L692 380 L640 420 Z" fill="#fff8f4"/>
+    <path d="M640 214 H744 V246 H640 Z" fill="#e8c9c0"/>
+  </g>
+</svg>
