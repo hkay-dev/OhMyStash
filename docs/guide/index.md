@@ -10,7 +10,7 @@ description: Save the prompt you're not ready to send, and bring it back from an
 
 OhMyStash (OMS) is a plugin for Oh My Pi (OMP). When you've typed a prompt you're not ready to send, press `Alt+S` and OMS saves it without submitting it. The composer clears, so you can move on to something else.
 
-Every stash is kept, from every chat, until you delete it. Find one later in the stash browser, search it, and bring it back with its images and large pastes. You can restore it as a normal prompt or send it into OMP's queue.
+OMS saves stashes from every chat and deletes one only when you delete it, or when you turn on [Retention days](settings.md#retention-days) and the stash goes unused that long. Find one later in the stash browser, search it, and bring it back with its images and large pastes. You can restore it as a normal prompt or send it into OMP's queue.
 
 ## Where to start
 
