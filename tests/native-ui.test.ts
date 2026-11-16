@@ -189,15 +189,21 @@ test("a stash added elsewhere lists again in place and the earlier call's cancel
   writeStash("first native");
   let added: { id: string; path: string } | undefined;
   let settleFirst: ((event: NativeListEvent) => void) | undefined;
+  let touch: ReturnType<typeof setInterval> | undefined;
   const host = fakeHost([
     () => {
       // Harrier answers the open call with a cancel when the list is sent again with its id.
       const { promise, resolve } = Promise.withResolvers<NativeListEvent>();
       settleFirst = resolve;
       added = writeStash("added elsewhere natively");
+      // macOS starts a folder watch a moment after watch() returns and drops changes made before
+      // that, so rewrite the stash until the refresh arrives instead of waiting on one event.
+      const bytes = readFileSync(added.path);
+      touch = setInterval(() => writeFileSync(added!.path, bytes), 200);
       return promise;
     },
     () => {
+      clearInterval(touch);
       settleFirst!({ type: "cancel", query: "nat", scope: "current" });
       return { type: "action", action: "lock", item: added!.id, query: "nat", scope: "current" };
     },
