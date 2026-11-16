@@ -7,6 +7,7 @@ OhMyStash (OMS, `@hkay-dev/ohmystash`) is an Oh My Pi plugin that stores unfinis
 - `deckhand app check ohmystash` (runs `scripts/check.sh` from any folder: `bun install --frozen-lockfile`, then `bun run check`, which is `tsc --noEmit` and the tests in `tests/`). `scripts/dev.sh` runs the same and prints how to load this checkout with `omp --plugin-dir`.
 - The full `bun run test` (all of `tests/`) only when Harsha asks.
 - The `capture:*` scripts and `benchmark:cross-chat` are for showcase media and benchmarks, not checks.
+- In a test that waits for the stash folder watch, write the change again until the refresh arrives. macOS starts a watch a moment after `watch()` returns and drops changes made before that, so a test that waits on one write hung for 60s under load (ohmystash#4w2t).
 
 ## Install and release
 
