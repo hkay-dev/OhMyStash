@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- OMP now loads OhMyStash as one bundled file (`extensions/prompt-stash.bundle.js`) instead of 6 modules, which saves a few ms of every launch. The `.ts` sources and the `./ui`, `./send-targets` and `./native-ui` exports stay as they are; `bun run bundle` rebuilds the bundle and the check fails when the committed one is stale. Release version is 1.17.4 (ohmystash#mefc).
+
 ## 1.16.0 - 2026-10-29
 
 ### Added

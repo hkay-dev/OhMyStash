@@ -8,6 +8,8 @@ The install archive has `package.json` and the runtime files in `extensions/`. F
 
 The package `files` allowlist limits npm and Bun packs. GitHub downloads also use `.gitattributes` export rules, because Bun's Git dependency installer doesn't apply the `files` allowlist. `git archive` uses the same export rules when preparing a release package.
 
+OMP loads `extensions/prompt-stash.bundle.js`, one file that `bun run bundle` builds from `extensions/prompt-stash.ts` and its imports. `omp.extensions` in `package.json` points at it, and the ship packs `HEAD` without building, so commit the rebuilt file with any change under `extensions/`. `scripts/check.sh` rebuilds it and fails when it differs from what is committed. The bundle sits beside `storage-permissions.ps1` because the Windows storage helper finds that file relative to its own location. The `.ts` sources stay in the package because the `./ui`, `./send-targets` and `./native-ui` exports and the tests use them.
+
 To check the file list, pack the committed revision without lifecycle scripts:
 
 ```sh
