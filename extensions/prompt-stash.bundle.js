@@ -22,9 +22,7 @@ import {
 } from "fs";
 import { basename, dirname as dirname2, join as join2, resolve as resolve2 } from "path";
 import { pathToFileURL } from "url";
-import {
-  getAgentDir
-} from "@oh-my-pi/pi-coding-agent";
+import { getAgentDir } from "@oh-my-pi/pi-utils";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { getEditorCommand, openInEditor } from "@oh-my-pi/pi-coding-agent/utils/external-editor";
