@@ -5,7 +5,12 @@
   "type": "module",
   "packageManager": "bun@1.4.3",
   "files": [
-    "extensions"
+    "extensions/prompt-stash.bundle.js",
+    "extensions/ui.ts",
+    "extensions/native-ui.ts",
+    "extensions/send-targets.ts",
+    "extensions/storage-permissions.ps1",
+    "extensions/storage-acl-worker.exe"
   ],
   "exports": {
     "./ui": "./extensions/ui.ts",
