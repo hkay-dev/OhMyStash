@@ -330,7 +330,7 @@ OhMyStash attaches to the composer when a session starts. Restart OMP after inst
 
 ## Development
 
-Use Bun 1.4.3. Development dependencies pin the official SDK packages to 18.19.0, with `^18.14.0` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
+Use Bun 1.4.3. Development dependencies pin the official SDK packages to 18.19.0, with `^18.14.0 || ^19.0.0` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts

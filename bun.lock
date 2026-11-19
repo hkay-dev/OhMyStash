@@ -13,9 +13,9 @@
         "typescript": "7.0.2",
       },
       "peerDependencies": {
-        "@oh-my-pi/pi-ai": "^18.14.0",
-        "@oh-my-pi/pi-coding-agent": "^18.14.0",
-        "@oh-my-pi/pi-tui": "^18.14.0",
+        "@oh-my-pi/pi-ai": "^18.14.0 || ^19.0.0",
+        "@oh-my-pi/pi-coding-agent": "^18.14.0 || ^19.0.0",
+        "@oh-my-pi/pi-tui": "^18.14.0 || ^19.0.0",
       },
     },
   },
