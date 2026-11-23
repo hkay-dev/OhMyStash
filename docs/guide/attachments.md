@@ -33,7 +33,7 @@ OMS checks every attachment on the way back. If one is damaged, missing, or read
 Restored prompt from <time>, but couldn't restore Image #2 (damaged)
 ```
 
-The reason is `damaged`, `missing` or `shared with other accounts`. A large pasted text that can't be read is named `the large pasted text`.
+The reason is usually `damaged`, `missing` or `shared with other accounts`. Any other read error, such as a file OMS isn't allowed to open or an attachment folder that isn't private to your account, shows that error's own message as the reason. A large pasted text that can't be read is named `the large pasted text`.
 
 A few things follow:
 
