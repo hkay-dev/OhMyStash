@@ -17,12 +17,9 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import type { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components";
-import type { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
-import type * as Tui from "@oh-my-pi/pi-tui";
-import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
 import { refreshDirsFromEnv } from "@oh-my-pi/pi-utils";
 import type * as PopupUi from "../extensions/ui";
+import { bodyAttachment, imageAttachment } from "./fixtures/stash-assets";
 import { SEND_TARGETS_CHANNEL, type SendTarget, type SendTargetsRequest, type SentPrompt } from "../extensions/send-targets";
 
 type Handler = (ctx: ExtensionContext) => Promise<void> | void;
@@ -32,7 +29,8 @@ const agentDir = mkdtempSync(join(tmpdir(), "oms-editor-flow-"));
 const stashDir = join(agentDir, "prompt-stash");
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 const previousConfigDir = process.env.PI_CONFIG_DIR;
-const EDITOR_THEME = { symbols: {}, borderColor: (text: string) => text };
+// What pi.sendUserMessage was asked to send.
+const userMessages: Array<{ content: unknown; options: unknown }> = [];
 const BROWSER_THEME = {
   isLight: false,
   getFgAnsi: () => "\u001b[39m",
@@ -41,9 +39,6 @@ const BROWSER_THEME = {
   symbol: (name: string) => name,
 };
 
-let Editor: typeof CustomEditor;
-let getKeybindings: typeof Tui.getKeybindings;
-let UiController: typeof ExtensionUiController;
 let OVERLAY_OPTIONS: typeof PopupUi.OVERLAY_OPTIONS;
 let selectOption: typeof PopupUi.selectOption;
 // The plugin's factory; OMP calls it again for every subagent.
@@ -66,10 +61,6 @@ function offerTargets(...targets: SendTarget[]): void {
   busListeners.set(SEND_TARGETS_CHANNEL, [(data) => {
     for (const target of targets) (data as SendTargetsRequest).add(target);
   }]);
-}
-
-function image(label: string) {
-  return { type: "image" as const, data: Buffer.from(label).toString("base64"), mimeType: "image/png" };
 }
 
 function writeSettings(settings: Record<string, unknown>): void {
@@ -97,28 +88,26 @@ function stashEntries(): StoredEntry[] {
     .map((name) => JSON.parse(readFileSync(join(stashDir, name), "utf8")));
 }
 
-// Mirrors OMP's setEditorComponent: the factory's editor becomes the focused composer and
-// receives only the previous composer's text.
-function host(sessionId: string, options: { custom?: unknown; notices?: string[] } = {}) {
-  const state = { composer: new Editor(EDITOR_THEME) };
-  const tui = { getFocused: () => state.composer, requestRender() {} };
+// A stand-in composer: OMP 19.2 lets a plugin read and set the draft's text only, through
+// getEditorText and setEditorText. `writes` counts the plugin's own changes to it.
+function host(sessionId: string, options: { custom?: unknown; notices?: string[]; idle?: boolean } = {}) {
+  const state = { text: "", writes: 0 };
   const ctx = {
     cwd: agentDir,
     mode: "tui",
     agent: { kind: "main" },
+    isIdle: () => options.idle ?? true,
     sessionManager: {
       getSessionId: () => sessionId,
       getSessionName: () => "Editor flow tests",
       getHeader: () => ({ type: "session", id: sessionId, timestamp: "2026-10-07T12:00:00.000Z", cwd: agentDir }),
     },
     ui: {
-      setEditorComponent(factory: Function) {
-        const next = factory(tui, EDITOR_THEME, {});
-        next.setText(state.composer.getText());
-        state.composer = next;
+      getEditorText: () => state.text,
+      setEditorText: (text: string) => {
+        state.writes += 1;
+        state.text = text;
       },
-      getEditorText: () => state.composer.getText(),
-      setEditorText: (text: string) => state.composer.setText(text),
       notify(message: string) {
         options.notices?.push(message);
       },
@@ -134,8 +123,8 @@ function browserKeys(...openings: string[][]) {
   let opening = 0;
   return (factory: Function) => {
     const { promise, resolve } = Promise.withResolvers<unknown>();
-    const tui = { terminal: { rows: 40, write() {} }, requestRender() {}, stop() {}, start() {} };
-    const component = factory(tui, BROWSER_THEME, undefined, resolve);
+    const ui = { size: () => ({ columns: 120, rows: 40 }), requestRender() {}, suspend: <R>(run: () => Promise<R>) => run() };
+    const component = factory(ui, BROWSER_THEME, undefined, resolve);
     for (const key of openings[opening++] ?? ["\u001b"]) component.handleInput(key);
     return promise;
   };
@@ -150,11 +139,6 @@ beforeAll(async () => {
   refreshDirsFromEnv();
   // Not static imports: SDK modules cache agent-dir paths as they load, so they must load after
   // the override above or the tests could touch the user's real stash.
-  ({ CustomEditor: Editor } = await import("@oh-my-pi/pi-coding-agent/modes/components"));
-  ({ getKeybindings } = await import("@oh-my-pi/pi-tui"));
-  ({ ExtensionUiController: UiController } = await import(
-    "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller"
-  ));
   ({ OVERLAY_OPTIONS, selectOption } = await import("../extensions/ui"));
   let startupScanSettled: () => Promise<void>;
   ({ default: loadPlugin, startupScanSettled } = await import("../extensions/prompt-stash.ts"));
@@ -169,6 +153,10 @@ beforeAll(async () => {
         };
       }
     },
+    sendUserMessage(content: unknown, options: unknown) {
+      userMessages.push({ content, options });
+      return Promise.resolve();
+    },
     registerShortcut(_key: string, shortcut: { handler: Handler }) {
       shortcuts.push(shortcut.handler);
     },
@@ -180,7 +168,7 @@ beforeAll(async () => {
 
 // session_start reloads the settings only for the main TUI session.
 const CONFIG_CONTEXT = {
-  cwd: agentDir, mode: "tui", agent: { kind: "main" }, ui: { setEditorComponent() {} },
+  cwd: agentDir, mode: "tui", agent: { kind: "main" }, ui: {},
 } as unknown as ExtensionContext;
 
 beforeEach(async () => {
@@ -237,106 +225,109 @@ test.skipIf(process.platform === "win32")("an editor that adds a final newline o
   expect(JSON.parse(readFileSync(path, "utf8")).text).toBe("no trailing newline");
 });
 
-test("installing the bridge keeps pasted payloads typed before session start", async () => {
-  const { ctx, state } = host(randomUUID());
-  const startup = state.composer;
-  const pasted = image("pasted before session start");
-  startup.setDraft("early draft [Image #1]", [pasted]);
-  startup.insertPaste("pasted line\n".repeat(20));
-  const draft = startup.getExpandedText();
-
+test("stashing refuses a draft that holds a pasted block or attachment chip, and leaves the draft", async () => {
+  const notices: string[] = [];
+  const { ctx, state } = host(randomUUID(), { notices });
   await sessionStart({}, ctx);
-
-  expect(state.composer).toBe(startup);
-  expect(state.composer.getExpandedText()).toBe(draft);
-  expect(state.composer.pendingImages).toEqual([pasted]);
+  // OMP lets a plugin read only the chip's label, not the image or text it stands for.
+  for (const draft of ["look [Image #1]", "see 📄 #1 and more", "[Paste #2, +20 lines]"]) {
+    notices.length = 0;
+    state.text = draft;
+    await shortcuts[0]!(ctx);
+    expect(notices.at(-1)).toContain("pasted block or attachment");
+    expect(state.text).toBe(draft);
+  }
+  expect(stashEntries()).toEqual([]);
+  expect(state.writes).toBe(0);
 });
 
-test("a deleted image chip leaves the composer empty for restore", async () => {
+test("restoring a stash with images puts its text back and names the images OMP can't attach", async () => {
   const sessionId = randomUUID();
-  writeStash(sessionId, "restore me");
-  const { ctx, state } = host(sessionId);
+  writeRawStash(sessionId, "look [Image #1] closely", { attachments: [imageAttachment(stashDir, "restored picture")] });
+  const notices: string[] = [];
+  const { ctx, state } = host(sessionId, { notices });
   await sessionStart({}, ctx);
-  const deleteChip = () => {
-    state.composer.setDraft("[Image #1]", [image("discarded")]);
-    // Backspace removes the whole chip; OMP keeps the image record so numbers are not reused.
-    state.composer.handleInput("\x7f");
-    expect(state.composer.getText()).toBe("");
-    expect(state.composer.pendingImages).toHaveLength(1);
-  };
 
-  deleteChip();
   await stashCommand("restore", ctx);
-  expect(state.composer.getText()).toBe("restore me");
 
-  deleteChip();
-  await shortcuts[0]!(ctx);
-  expect(state.composer.getText()).toBe("restore me");
-  expect(state.composer.pendingImages).toEqual([]);
+  expect(state.text).toBe("look [Image #1 unavailable] closely");
+  expect(notices.at(-1)).toContain(
+    "couldn't restore Image #1 (OMP doesn't let plugins attach images to the composer)",
+  );
   expect(stashEntries()).toHaveLength(1);
 });
 
-test("stashing drops images whose chips were deleted and renumbers the rest", async () => {
-  const { ctx, state } = host(randomUUID());
+test("restoring a large pasted body puts the whole text back in the draft", async () => {
+  const sessionId = randomUUID();
+  const body = "large paste line\n".repeat(70_000);
+  writeRawStash(sessionId, "[Large pasted prompt · 70001 lines]", { attachments: [bodyAttachment(stashDir, body)] });
+  const notices: string[] = [];
+  const { ctx, state } = host(sessionId, { notices });
   await sessionStart({}, ctx);
-  const kept = image("kept");
-  // Chip #1 was deleted: its image stays in pendingImages but the text no longer references it.
-  state.composer.setDraft("keep [Image #2]", [image("deleted"), kept]);
 
-  await shortcuts[0]!(ctx);
-  const [entry] = stashEntries();
-  expect(entry?.attachments).toHaveLength(1);
-  expect(entry?.text).toBe("keep [Image #1]");
+  await stashCommand("restore", ctx);
 
-  await shortcuts[0]!(ctx);
-  expect(state.composer.getExpandedText()).toBe("keep [Image #1]");
-  expect(state.composer.pendingImages.map((restored) => restored.data)).toEqual([kept.data]);
+  expect(state.text).toBe(body);
+  expect(notices.at(-1)).toContain("restore never deletes stash files");
 });
 
-test("stashed images keep the display extensions OMP derives from their MIME types", async () => {
-  // OhMyStash carries its own copy of this pi-tui helper; compiled OMP does not serve prompt/*.
-  const mimeTypes = [
-    "image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/svg+xml",
-    "image/PNG", "image/avif", "image/x-icon; charset=binary", "image/vnd.example+xml", "image/.heic",
-    "image/bad name", `image/${"a".repeat(33)}`, "image/",
-  ];
-  const { ctx, state } = host(randomUUID());
-  await sessionStart({}, ctx);
-  const images = mimeTypes.map((mimeType) => ({ ...image(mimeType), mimeType }));
-  state.composer.setDraft(images.map((_, index) => `[Image #${index + 1}]`).join(" "), images);
-
-  await shortcuts[0]!(ctx);
-
-  expect(stashEntries()[0]?.attachments).toHaveLength(mimeTypes.length);
-  const names = readdirSync(join(stashDir, "attachments"));
-  for (const mimeType of mimeTypes) {
-    const hash = new Bun.SHA256().update(mimeType).digest("hex");
-    const extension = blobExtensionForImageMimeType(mimeType);
-    expect(names.filter((name) => name.startsWith(hash)).sort()).toEqual(
-      extension ? [hash, `${hash}.${extension}`] : [hash],
-    );
-  }
-});
-
-test("submitting a queued stash does not depend on the Enter keybinding", async () => {
+test("Q sends a queued stash as a user message and leaves the composer alone", async () => {
   const sessionId = randomUUID();
   writeStash(sessionId, "queued work");
   const { ctx, state } = host(sessionId, { custom: browserKeys(["Q"]) });
   await sessionStart({}, ctx);
-  const submissions: string[] = [];
-  state.composer.onSubmit = (text) => {
-    submissions.push(text);
-  };
-  const keybindings = getKeybindings();
-  const saved = keybindings.getUserBindings();
-  keybindings.setUserBindings({ ...saved, "tui.input.submit": "shift+enter", "tui.input.newLine": "enter" });
-  try {
-    await stashCommand("", ctx);
-  } finally {
-    keybindings.setUserBindings(saved);
-  }
+  userMessages.length = 0;
 
-  expect(submissions).toEqual(["/queue queued work"]);
+  await stashCommand("", ctx);
+
+  // An idle session starts a turn with it.
+  expect(userMessages).toEqual([{ content: "queued work", options: undefined }]);
+  expect(state.writes).toBe(0);
+  expect(stashEntries()[0]?.usedAt).toBeString();
+
+  // A busy one queues it behind the current turn, like /queue.
+  const busy = host(sessionId, { custom: browserKeys(["Q"]), idle: false });
+  userMessages.length = 0;
+  await stashCommand("", busy.ctx);
+  expect(userMessages).toEqual([{ content: "queued work", options: { deliverAs: "followUp" } }]);
+});
+
+test("Q sends a queued stash's images with its text", async () => {
+  const sessionId = randomUUID();
+  writeRawStash(sessionId, "compare [Image #1]", { attachments: [imageAttachment(stashDir, "queued picture")] });
+  const { ctx } = host(sessionId, { custom: browserKeys(["Q"]) });
+  await sessionStart({}, ctx);
+  userMessages.length = 0;
+
+  await stashCommand("", ctx);
+
+  expect(userMessages).toEqual([{
+    content: [
+      { type: "text", text: "compare [Image #1]" },
+      { type: "image", data: Buffer.from("queued picture").toString("base64"), mimeType: "image/png" },
+    ],
+    options: undefined,
+  }]);
+});
+
+test("Q stops at a draft when an image can't be read, and sends nothing", async () => {
+  const sessionId = randomUUID();
+  const picture = imageAttachment(stashDir, "damaged picture");
+  writeRawStash(sessionId, "compare [Image #1]", { attachments: [picture] });
+  // Same-size garbage fails the content hash check.
+  writeFileSync(join(stashDir, "attachments", picture.ref.slice("sha256:".length)), Buffer.alloc(picture.byteLength, 0x21), {
+    mode: 0o600,
+  });
+  const notices: string[] = [];
+  const { ctx, state } = host(sessionId, { custom: browserKeys(["Q"]), notices });
+  await sessionStart({}, ctx);
+  userMessages.length = 0;
+
+  await stashCommand("", ctx);
+
+  expect(userMessages).toEqual([]);
+  expect(state.text).toBe("/queue compare [Image #1 unavailable]");
+  expect(notices.at(-1)).toContain("Inserted the queued draft without submitting it, because Image #1 (damaged)");
 });
 
 test("s sends the selected stash to another plugin's target and keeps the stash and the draft", async () => {
@@ -346,12 +337,12 @@ test("s sends the selected stash to another plugin's target and keeps the stash 
   offerTargets({ label: "Elsewhere", send: (prompt) => void sent.push(prompt) });
   const { ctx, state } = host(sessionId, { custom: browserKeys(["s"]) });
   await sessionStart({}, ctx);
-  state.composer.setText("keep my draft");
+  state.text = "keep my draft";
 
   await stashCommand("", ctx);
 
   expect(sent).toEqual([{ text: "loop this", images: 0 }]);
-  expect(state.composer.getText()).toBe("keep my draft");
+  expect(state.text).toBe("keep my draft");
   const [entry] = stashEntries();
   expect(entry?.text).toBe("loop this");
   expect(entry?.usedAt).toBeString();
@@ -382,7 +373,7 @@ test("s does nothing when no plugin offers a target", async () => {
 
   await stashCommand("", ctx);
 
-  expect(state.composer.getText()).toBe("");
+  expect(state.text).toBe("");
   expect(stashEntries()[0]?.usedAt).toBeUndefined();
   expect(notices).toEqual([]);
 });
@@ -413,80 +404,29 @@ test("a second browser press in the same input batch is ignored", async () => {
   await later;
 });
 
-test("a composer replaced by another extension is never driven through the stale editor", async () => {
-  const sessionId = randomUUID();
-  writeStash(sessionId, "restore target");
-  const { ctx, state } = host(sessionId);
-  await sessionStart({}, ctx);
-  const stale = state.composer;
-  stale.setDraft("stale draft [Image #1]", [image("stale")]);
-  // Another extension swaps the composer; OMP hands the new one only the text.
-  const replacement = new Editor(EDITOR_THEME);
-  replacement.setText(stale.getText());
-  state.composer = replacement;
-
-  await shortcuts[0]!(ctx);
-  expect(stashEntries()).toHaveLength(1);
-  expect(stale.getExpandedText()).toBe("stale draft [Image #1]");
-  expect(stale.pendingImages).toHaveLength(1);
-  expect(replacement.getText()).toBe(stale.getText());
-
-  replacement.setText("");
-  await shortcuts[0]!(ctx);
-  expect(replacement.getText()).toBe("restore target");
-  expect(stale.getExpandedText()).toBe("stale draft [Image #1]");
-});
-
-test("closing a picker or the browser keeps the composer's text, caret, and undo history", async () => {
+test("closing a picker or the browser leaves the composer alone", async () => {
   const sessionId = randomUUID();
   writeStash(sessionId, "browse me");
   const mounts: unknown[] = [];
-  const overlays: unknown[] = [];
-  // OMP's own controller backs ctx.ui.custom. Like pi-tui, the TUI focuses whatever it mounts, and
-  // the user then cancels it with Escape.
-  const tui = {
-    terminal: { rows: 40, columns: 100 },
-    showOverlay(component: Tui.Component, options: unknown) {
-      overlays.push(options);
-      this.setFocus(component);
-      return { hide() {}, setHidden() {}, isHidden: () => false };
-    },
-    setFocus(component: Tui.Component) {
-      if (component !== state.composer) queueMicrotask(() => component.handleInput?.("\u001b"));
-    },
-    requestRender() {},
-  };
-  const custom: ExtensionContext["ui"]["custom"] = (factory, options) => {
+  // The user cancels each view with Escape as soon as it mounts.
+  const cancel = browserKeys();
+  const custom = (factory: Function, options: unknown) => {
     mounts.push(options);
-    return controller.showHookCustom(factory, options);
+    return cancel(factory);
   };
   const { ctx, state } = host(sessionId, { custom });
-  const controller = new UiController({
-    get editor() {
-      return state.composer;
-    },
-    editorContainer: { clear() {}, addChild() {} },
-    ui: tui,
-  } as unknown as ConstructorParameters<typeof UiController>[0]);
   await sessionStart({}, ctx);
-  state.composer.setText("draft");
-  state.composer.handleInput("s");
-  state.composer.handleInput("\u001b[D");
-  const caret = state.composer.getCursor();
+  state.text = "draft";
 
   expect(await selectOption(ctx, "Pick one", ["Alpha", "Beta"])).toBeUndefined();
   await stashCommand("", ctx);
 
+  // Stock bottom overlay, and neither view reads or sets the draft: OMP refocuses the composer on close, so
+  // its text, caret, and undo history stay as they were.
   expect(mounts).toHaveLength(2);
   for (const options of mounts) expect(options).toBe(OVERLAY_OPTIONS);
-  // Switch Model's placement: bottom-anchored, full width, up to every terminal row.
-  const switchModel = { anchor: "bottom-center", width: "100%", maxHeight: "100%", margin: 0 };
-  expect(overlays).toEqual([switchModel, switchModel]);
-  expect(state.composer.getText()).toBe("drafts");
-  expect(state.composer.getCursor()).toEqual(caret);
-  // Ctrl+_ is OMP's default undo key.
-  state.composer.handleInput("\u001f");
-  expect(state.composer.getText()).toBe("draft");
+  expect(state.text).toBe("draft");
+  expect(state.writes).toBe(0);
 });
 
 // A stash file written straight to disk, so a test can date it and set its fields.
@@ -509,22 +449,22 @@ test("stashing this chat's newest stash again keeps one stash, while other draft
   const notices: string[] = [];
   const { ctx, state } = host(randomUUID(), { notices });
   await sessionStart({}, ctx);
-  const picture = image("same picture");
-  state.composer.setDraft("same draft [Image #1]", [picture]);
+  state.text = "same draft";
   await shortcuts[0]!(ctx);
+  expect(state.text).toBe("");
   await shortcuts[0]!(ctx);
-  expect(state.composer.pendingImages).toEqual([picture]);
+  expect(state.text).toBe("same draft");
   await shortcuts[0]!(ctx);
 
   expect(stashEntries()).toHaveLength(1);
   expect(stashEntries()[0]?.usedAt).toBeString();
   expect(notices.at(-1)).toBe("Prompt was already this chat's latest stash, so OMS kept that one");
   // Another mode, other text, or a stash that's no longer the newest each make a new one.
-  state.composer.setDraft("/queue same draft [Image #1]", [picture]);
+  state.text = "/queue same draft";
   await shortcuts[0]!(ctx);
-  state.composer.setDraft("other draft", []);
+  state.text = "other draft";
   await shortcuts[0]!(ctx);
-  state.composer.setDraft("same draft [Image #1]", [picture]);
+  state.text = "same draft";
   await shortcuts[0]!(ctx);
   expect(stashEntries()).toHaveLength(4);
 });
@@ -532,19 +472,17 @@ test("stashing this chat's newest stash again keeps one stash, while other draft
 test("p restores a stash and deletes it with the attachments nothing else uses, but keeps a locked one", async () => {
   const sessionId = randomUUID();
   const notices: string[] = [];
-  const { ctx, state } = host(sessionId, { custom: browserKeys(["p"]), notices });
-  await sessionStart({}, ctx);
-  const picture = image("pop picture");
-  state.composer.setDraft("pop me [Image #1]", [picture]);
-  await shortcuts[0]!(ctx);
+  const body = "pop line\n".repeat(10);
+  writeRawStash(sessionId, "[Large pasted prompt · 11 lines]", { attachments: [bodyAttachment(stashDir, body)] });
   const attachments = join(stashDir, "attachments");
   // Older than the window in which a save running elsewhere could be about to use it.
   for (const name of readdirSync(attachments)) backdate(join(attachments, name), 120_000);
+  const { ctx, state } = host(sessionId, { custom: browserKeys(["p"]), notices });
+  await sessionStart({}, ctx);
 
   await stashCommand("", ctx);
 
-  expect(state.composer.getExpandedText()).toBe("pop me [Image #1]");
-  expect(state.composer.pendingImages).toEqual([picture]);
+  expect(state.text).toBe(body);
   expect(stashEntries()).toEqual([]);
   expect(readdirSync(attachments)).toEqual([]);
   expect(notices.at(-1)).toContain("Popped prompt");
@@ -553,9 +491,23 @@ test("p restores a stash and deletes it with the attachments nothing else uses, 
   const second = host(sessionId, { custom: browserKeys(["p"]), notices });
   await sessionStart({}, second.ctx);
   await stashCommand("", second.ctx);
-  expect(second.state.composer.getText()).toBe("locked pop");
+  expect(second.state.text).toBe("locked pop");
   expect(existsSync(locked)).toBeTrue();
   expect(notices.at(-1)).toContain("locked stashes stay after a pop");
+});
+
+test("p keeps a stash whose images couldn't be attached", async () => {
+  const sessionId = randomUUID();
+  const notices: string[] = [];
+  writeRawStash(sessionId, "pop [Image #1]", { attachments: [imageAttachment(stashDir, "kept picture")] });
+  const { ctx, state } = host(sessionId, { custom: browserKeys(["p"]), notices });
+  await sessionStart({}, ctx);
+
+  await stashCommand("", ctx);
+
+  expect(state.text).toBe("pop [Image #1 unavailable]");
+  expect(stashEntries()).toHaveLength(1);
+  expect(notices.at(-1)).toContain("couldn't restore Image #1");
 });
 
 test("retention counts from a stash's last restore", async () => {
@@ -570,7 +522,7 @@ test("retention counts from a stash's last restore", async () => {
   const { ctx, state } = host(sessionId);
   await sessionStart({}, ctx);
   await stashCommand("restore", ctx);
-  expect(state.composer.getText()).toBe("restored now");
+  expect(state.text).toBe("restored now");
 
   writeSettings({ "Retention days": 2 });
   await sessionStart({}, CONFIG_CONTEXT);
@@ -580,12 +532,14 @@ test("retention counts from a stash's last restore", async () => {
 });
 
 test("deleting a stash deletes the attachments no other stash uses, and old leftovers", async () => {
-  const { ctx, state } = host(randomUUID(), { custom: browserKeys(["d"]) });
+  const sessionId = randomUUID();
+  const { ctx } = host(sessionId, { custom: browserKeys(["d"]) });
   await sessionStart({}, ctx);
-  state.composer.setDraft("[Image #1] kept", [image("shared picture")]);
-  await shortcuts[0]!(ctx);
-  state.composer.setDraft("[Image #1] [Image #2] deleted", [image("shared picture"), image("only picture")]);
-  await shortcuts[0]!(ctx);
+  const shared = imageAttachment(stashDir, "shared picture");
+  writeRawStash(sessionId, "[Image #1] kept", { attachments: [shared] });
+  writeRawStash(sessionId, "[Image #1] [Image #2] deleted", {
+    attachments: [shared, imageAttachment(stashDir, "only picture")],
+  });
   const attachments = join(stashDir, "attachments");
   for (const name of readdirSync(attachments)) backdate(join(attachments, name), 120_000);
   const leftover = (dir: string, name: string, ageMs: number) => {
@@ -604,14 +558,14 @@ test("deleting a stash deletes the attachments no other stash uses, and old left
   // The browser lists the newest stash first, so d deletes the two-image one.
   await stashCommand("", ctx);
 
-  const shared = new Bun.SHA256().update("shared picture").digest("hex");
+  const hash = shared.ref.slice("sha256:".length);
   expect(stashEntries().map((entry) => entry.text)).toEqual(["[Image #1] kept"]);
-  expect(readdirSync(attachments).sort()).toEqual([shared, `${shared}.png`, "b".repeat(64)].sort());
+  expect(readdirSync(attachments).sort()).toEqual([hash, `${hash}.png`, "b".repeat(64)].sort());
   expect(existsSync(oldOrphan)).toBeFalse();
   expect(existsSync(recentOrphan)).toBeTrue();
 });
 
-test("new attachments stop at the 1 GiB attachment quota, while text stashes still save", async () => {
+test("a large pasted body stops at the 1 GiB attachment quota, while smaller stashes still save", async () => {
   const notices: string[] = [];
   const { ctx, state } = host(randomUUID(), { notices });
   await sessionStart({}, ctx);
@@ -622,13 +576,14 @@ test("new attachments stop at the 1 GiB attachment quota, while text stashes sti
   ftruncateSync(fd, 1024 * 1024 * 1024);
   closeSync(fd);
 
-  state.composer.setDraft("[Image #1] one too many", [image("one more picture")]);
+  const tooBig = "x".repeat(1024 * 1024 + 1);
+  state.text = tooBig;
   await shortcuts[0]!(ctx);
   expect(notices.at(-1)).toContain("OMS attachment storage is full (1 GiB across all chats)");
-  expect(state.composer.getExpandedText()).toBe("[Image #1] one too many");
+  expect(state.text).toBe(tooBig);
   expect(stashEntries()).toEqual([]);
 
-  state.composer.setDraft("text still fits", []);
+  state.text = "text still fits";
   await shortcuts[0]!(ctx);
   expect(stashEntries().map((entry) => entry.text)).toEqual(["text still fits"]);
 });
@@ -639,7 +594,7 @@ test("a subagent's plugin load and session start leave the main session's settin
   // Subagents load every plugin again in the same process, then start a print-mode session.
   await loadPlugin({ on() {}, registerShortcut() {}, registerCommand() {} } as unknown as ExtensionAPI);
   await sessionStart({}, {
-    cwd: agentDir, mode: "print", agent: { kind: "sub" }, ui: { setEditorComponent() {} },
+    cwd: agentDir, mode: "print", agent: { kind: "sub" }, ui: {},
   } as unknown as ExtensionContext);
   expect(existsSync(expired)).toBeTrue();
 
@@ -647,7 +602,8 @@ test("a subagent's plugin load and session start leave the main session's settin
   const titles: string[] = [];
   const { ctx } = host(randomUUID(), {
     custom(factory: Function) {
-      const component = factory({ terminal: { rows: 40 }, requestRender() {} }, BROWSER_THEME, undefined, () => {});
+      const ui = { size: () => ({ columns: 120, rows: 40 }), requestRender() {}, suspend: <R>(run: () => Promise<R>) => run() };
+      const component = factory(ui, BROWSER_THEME, undefined, () => {});
       titles.push(component.render(120)[0] ?? "");
       return Promise.resolve(null);
     },
@@ -677,10 +633,10 @@ test.skipIf(process.platform === "win32")("names shared storage with its chmod f
 
   chmodSync(stashDir, 0o755);
   try {
-    state.composer.setText("stash me");
+    state.text = "stash me";
     await shortcuts[0]!(ctx);
     expect(notices.at(-1)).toBe(`OMS failed: OMS storage directory is shared with other accounts. Run: chmod 700 '${stashDir}'`);
-    expect(state.composer.getText()).toBe("stash me");
+    expect(state.text).toBe("stash me");
   } finally {
     chmodSync(stashDir, 0o700);
   }

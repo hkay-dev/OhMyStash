@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import type { ExtensionContext, Theme } from "@oh-my-pi/pi-coding-agent";
-import { type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
-import { SYMBOL_PRESETS } from "@oh-my-pi/pi-tui/theme/symbols";
+import type { ExtensionContext, ExtensionTheme as Theme, ExtensionUiHost } from "@oh-my-pi/pi-coding-agent";
+import { visibleWidth } from "@oh-my-pi/pi-tui/text/width";
+import { presetSymbols } from "@oh-my-pi/pi-tui/theme/symbols";
 import {
   createList,
   formatShortcut,
@@ -16,7 +16,22 @@ import {
 } from "../extensions/ui";
 import { selectOption as selectOption1104 } from "./fixtures/ui-1.10.4";
 
-const nerd = SYMBOL_PRESETS.nerd;
+const nerd = presetSymbols("nerd") as Record<
+  | "icon.file"
+  | "icon.model"
+  | "icon.search"
+  | "key.altMac"
+  | "key.backspace"
+  | "key.ctrlMac"
+  | "key.delete"
+  | "key.enter"
+  | "key.esc"
+  | "key.shift"
+  | "key.space"
+  | "key.superMac"
+  | "key.tab",
+  string
+>;
 const CTRL = nerd["key.ctrlMac"];
 const ALT = nerd["key.altMac"];
 const SHIFT = nerd["key.shift"];
@@ -54,16 +69,19 @@ const ANSI_THEME = {
   bold: (text: string) => `\u001b[1m${text}\u001b[22m`,
 } as unknown as Theme;
 
-type FakeTui = { terminal: { rows: number }; renders: number; requestRender(): void };
+type FakeTui = { rows: number; renders: number; requestRender(): void; size(): { columns: number; rows: number } };
 type Outcome<R> = { closed: boolean; value?: R };
 type File = { name: string; folder: string };
 
 function fakeTui(rows: number): FakeTui {
   return {
-    terminal: { rows },
+    rows,
     renders: 0,
     requestRender() {
       this.renders += 1;
+    },
+    size() {
+      return { columns: 80, rows: this.rows };
     },
   };
 }
@@ -363,7 +381,7 @@ test("draws two-row items and pages by whole items", () => {
   expect(lines[10]).toStartWith("│     src/part-6");
   expect(compactness.every((compact) => !compact)).toBeTrue();
   // The compact layout shows only each item's first row.
-  tui.terminal.rows = 11;
+  tui.rows = 11;
   compactness.length = 0;
   lines = list.render(80);
   expect(lines).toHaveLength(11);
@@ -532,7 +550,7 @@ test("opens on the selected item and lets an owner component select another", ()
 
   const closed: (string | undefined)[] = [];
   const tui = fakeTui(20);
-  const list = createList(tui as unknown as TUI, PLAIN_THEME, fileOptions(items), (value) => closed.push(value));
+  const list = createList(tui as unknown as ExtensionUiHost, PLAIN_THEME, fileOptions(items), (value) => closed.push(value));
   expect(list.render(80).join("\n")).toContain("› file-000.ts");
   list.select(items[7]!);
   expect(list.render(80).join("\n")).toContain("› file-007.ts");
@@ -544,17 +562,13 @@ test("opens on the selected item and lets an owner component select another", ()
   expect(closed).toEqual(["file-029.ts", undefined]);
 });
 
-test("styles the selected row and lets OMP use the terminal cursor in the search field", () => {
+test("styles the selected row and draws the search caret as a reversed cell", () => {
   const { list } = openList(fileOptions(files(3)), 20, ANSI_THEME);
   const lines = list.render(80);
   expect(lines[3]).toContain("\u001b[48;5;236m\u001b[38;5;33m› \u001b[39mfile-000.ts");
   expect(lines[4]).not.toContain("\u001b[48;5;236m");
   list.handleInput("f");
   expect(list.render(80)[1]).toContain("\u001b[7m \u001b[27m");
-  list.setUseTerminalCursor?.(true);
-  expect(list.render(80)[1]).not.toContain("\u001b[7m");
-  list.focused = false;
-  expect(list.render(80)[1]).not.toContain("\u001b_pi:c\u0007");
 });
 
 test("types printable keys into the search, even keys that actions use", async () => {
@@ -635,7 +649,7 @@ test("keeps the selection on a rebuilt item by its search text when there is no 
 });
 
 // selectOption 1.10.4 and now, driven with the same keys and terminal sizes.
-type Picker = { handleInput(data: string): void; render(width: number): readonly string[]; focused: boolean };
+type Picker = { handleInput(data: string): void; render(width: number): readonly string[] };
 
 function mountPicker(
   select: typeof selectOption,
@@ -704,18 +718,14 @@ test("renders selectOption exactly as 1.10.4 did, with the same keys and results
           compare("opening");
           for (const step of sequence) {
             if (typeof step === "number") {
-              tui.terminal.rows = step;
+              tui.rows = step;
             } else {
               before.component.handleInput(step);
               after.component.handleInput(step);
             }
             compare(JSON.stringify(step));
           }
-          before.component.focused = false;
-          after.component.focused = false;
-          compare("losing focus");
-          before.component.focused = true;
-          after.component.focused = true;
+          compare("after the last key");
           before.component.handleInput(KEY.enter);
           after.component.handleInput(KEY.enter);
           await Promise.resolve();
@@ -807,7 +817,7 @@ test("selectOption pages by the terminal's current rows after a resize", async (
   const tui = fakeTui(24);
   const picker = mountPicker(selectOption, tui, options);
   picker.component.render(80);
-  tui.terminal.rows = 10;
+  tui.rows = 10;
   picker.component.handleInput(KEY.pageDown);
   picker.component.handleInput(KEY.enter);
   await Promise.resolve();

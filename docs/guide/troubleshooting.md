@@ -102,11 +102,13 @@ The stash, or the stash after your edit, is bigger than one stash file may be, o
 
 ### Prompt restored from ..., but couldn't restore Image #2 (damaged)
 
-This is a warning. The same shape comes with `Restored prompt from ...` from the browser, and `Inserted queued draft from ...` for a queue stash. The stored copy of that attachment failed its checks, so OhMyStash restored everything else and left a plain `[Image #2 unavailable]` note where the image was. The reason in brackets is one of `damaged`, `missing` or `shared with other accounts`. A large paste says `the large pasted text` instead of an image number. Stashing the same image again repairs a damaged copy. A pop keeps a stash whose attachments didn't all come back, so you can try again. See [Restore, queue and pop](browser/restore-and-queue.md).
+This is a warning. The same shape comes with `Restored prompt from ...` from the browser, and `Inserted queued draft from ...` for a queue stash. The stored copy of that attachment failed its checks, so OhMyStash restored everything else and left a plain `[Image #2 unavailable]` note where the image was. The reason in brackets is one of `damaged`, `missing` or `shared with other accounts`. A large paste says `the large pasted text` instead of an image number. A pop keeps a stash whose attachments didn't all come back, so you can try again. See [Restore, queue and pop](browser/restore-and-queue.md).
 
-### Inserted the queued draft without submitting it, because it's missing ... The stash file is unchanged
+With the reason `OMP doesn't let plugins attach images to the composer`, the image is fine and still in the stash. OMP 19.2 gives a plugin no way to put an image back in the composer, so only its text comes back. `Shift+Q` sends the stash with its images.
 
-You pressed `Shift+Q` on a stash with an attachment that couldn't be restored. OhMyStash put the draft in the editor instead of submitting it, so you can look first. The stash file is untouched.
+### Inserted the queued draft without submitting it, because ... couldn't be restored. The stash file is unchanged
+
+You pressed `Shift+Q` on a stash with an attachment that couldn't be read. OhMyStash put the draft in the editor instead of sending it, so you can look first. The stash file is untouched.
 
 ### Stash or clear the current editor before submitting a queued stash
 
@@ -126,15 +128,11 @@ You popped a stash that another session changed in the meantime. The prompt is i
 
 Another session changed the stash while you were editing it. Your text was saved as a separate conflict copy marked `[C]`, and the other session's version is untouched.
 
-## After an install or update
+## Stashing
 
-### OMS failed: Restart OMP once so OhMyStash can attach to the native editor
+### OMS failed: The draft holds a pasted block or attachment, which OMP doesn't let OhMyStash read. Remove it or send it, then stash again
 
-### OMS failed: Restart OMP once so OhMyStash can restore native attachments
-
-### OMS failed: Restart OMP once so OhMyStash can submit queued stashes
-
-OhMyStash attaches to OMP's editor when a session starts. A session that was already open when you installed or updated it hasn't attached. Quit OMP and start it again.
+The composer shows a pasted block or an image as a chip, and OMP 19.2 lets a plugin read only the chip's label, not what it stands for. Stashing would lose the content, so OhMyStash stops and leaves your draft as it is. Send the draft, or remove the chip, then stash again.
 
 ## Deleting
 

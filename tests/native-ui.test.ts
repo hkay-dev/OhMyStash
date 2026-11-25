@@ -128,7 +128,7 @@ beforeAll(async () => {
   } as unknown as ExtensionAPI);
   // session_start points the plugin at this bus.
   await sessionStart({}, {
-    cwd: agentDir, mode: "tui", agent: { kind: "main" }, ui: { setEditorComponent() {} },
+    cwd: agentDir, mode: "tui", agent: { kind: "main" }, ui: {},
   } as unknown as ExtensionContext);
 });
 

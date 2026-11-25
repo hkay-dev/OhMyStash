@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.18.0 - 2026-11-25
+
+### Changed
+
+- OhMyStash now runs on OMP 19.2.1 or newer. The SDK packages are pinned to 19.2.1 with `^19.2.1` peers, and the bundle imports only specifiers that compiled OMP serves to plugins. OMP 19.2 removed the pi-tui components and helpers, `CustomEditor`, and `ctx.ui.setEditorComponent`, so the browser and the shared lists are now plain rows views that OMP draws and feeds raw key input.
+- `@hkay-dev/ohmystash/ui`: `createList` now takes OMP's UI host and extension theme (`createList(ui, theme, options, done)`) and returns a rows view with `render(width)`, `handleInput(data)` and `select(item)`. It no longer extends pi-tui's `Component` and `Focusable`, so `focused`, `invalidate` and `setUseTerminalCursor` are gone, and the search caret is a reversed cell. `createFrame` and the `theme` that `renderItem` receives take OMP's extension theme. `selectOption`, `showList`, `OVERLAY_OPTIONS`, `fitToWidth`, `extensionIcon`, `formatShortcut`, `formatShortcutRange` and the list options keep their signatures.
+- `Shift+Q` now sends the selected stash as a queued message through OMP's `sendUserMessage`, with its images and text: an idle session starts a turn with it, and a busy one queues it after the current turn. It no longer types `/queue ` into the composer and presses Enter. A stash with an attachment that can't be read is still put in the composer as a draft instead.
+
+### Added
+
+- `@hkay-dev/ohmystash/ui` exports `readKey` and `keyMatches`, which decode the raw input a rows view receives and match it to an OMP key id, and `TextField`, a one-line text field for a rows view.
+
+### Removed
+
+- OMP 19.2 lets a plugin read and set the composer's text only. OhMyStash can no longer read the images and collapsed-paste chips in a draft, so stashing a draft that holds one stops with `The draft holds a pasted block or attachment, which OMP doesn't let OhMyStash read` and leaves the draft as it is. Restoring a stash that has images puts its text back with `[Image #N unavailable]` notes and names the images; the images stay in the stash, `Shift+Q` still sends them, and a pop keeps the stash. A prompt over 1 MiB still comes back whole.
+- The `Restart OMP once so OhMyStash can attach to the native editor` messages are gone, because OhMyStash no longer attaches to the composer.
+
 ## Unreleased
 
 ### Changed

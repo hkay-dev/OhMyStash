@@ -4,7 +4,7 @@
 
 # OhMyStash for Oh My Pi
 
-I'm proud to present OhMyStash! OMS stores unfinished OhMyPi prompts without submitting them. It preserves normal and `/queue` drafts, images, collapsed large pastes, timestamps, source-chat metadata, locks, and a whole lot more!
+I'm proud to present OhMyStash! OMS stores unfinished OhMyPi prompts without submitting them. It preserves normal and `/queue` drafts, large pasted prompts, timestamps, source-chat metadata, locks, and a whole lot more!
 
 ![OhMyStash browser populated with prompts from several chats](assets/ohmystash-browser.png)
 
@@ -12,7 +12,7 @@ I had a ton of fun making this, and I hope you find it just as useful as I do!
 
 ## Install
 
-You need OMP 18.14.0 or newer. OMP's plugin manager installs packages with Bun, so `bun` has to be on your PATH. On macOS:
+You need OMP 19.2.1 or newer. OMP's plugin manager installs packages with Bun, so `bun` has to be on your PATH. On macOS:
 
 ```sh
 brew install bun
@@ -66,9 +66,9 @@ You can do quite a bit more in the browser:
 - **Source metadata.** Global entries show the source chat, workspace, timestamp, and short session ID.
 - **Search.** Filter prompt text, chat names, workspaces, timestamps, queue mode, locks, and attachments.
 - **Queue draft.** Press `q` to place the selected stash in the composer as an editable `/queue` draft.
-- **Submit queue.** Press `Shift+Q` to prepend `/queue ` and submit the selected stash while keeping the browser open for more.
+- **Submit queue.** Press `Shift+Q` to send the selected stash as a queued message, with its images, while keeping the browser open for more.
 - **Pop.** Press `p` to restore the selected stash and delete it in one go. A locked stash stays.
-- **Attachments.** Restore images and collapsed large pastes with the prompt that owns them.
+- **Attachments.** Restore large pasted prompts with their prompt. Images stay in the stash, and a restore names them (see [Attachments](#attachments)).
 - **Editing.** Press `e` to edit a stash with the configured editor or OMP's built-in editor.
 - **Locking.** Lock reusable stashes so deletion leaves them alone.
 - **Scoped deletion.** Delete one unlocked stash or clear unlocked stashes from the current browser scope.
@@ -91,9 +91,9 @@ Regular `q` comes first. It puts the stash into the composer as an editable `/qu
 
 ### Submit queue
 
-`Shift+Q` prepends `/queue `, submits the stash immediately, and keeps the browser open on the same stash. Repeat it to stack messages in OMP's queue, then press `Esc` to exit.
+`Shift+Q` sends the stash as a queued message right away, with its images, and keeps the browser open on the same stash. Repeat it to stack messages in OMP's queue, then press `Esc` to exit.
 
-Stash or clear any draft in the composer before restoring or submitting a saved prompt. This includes drafts that contain only images.
+Stash or clear any draft in the composer before restoring or submitting a saved prompt.
 
 ![OhMyStash submitted queue message](assets/ohmystash-feature-submit-queue.gif)
 
@@ -105,7 +105,7 @@ Press `/` and type. Search narrows the current scope as you go. While you're typ
 
 ### Attachments
 
-Images and large pasted bodies return with their stash. If a stored image or paste is damaged or missing, OMS still restores the rest of the prompt and tells you which attachment it couldn't bring back.
+A prompt over 1 MiB is stored as a file and comes back whole. OMP 19.2 lets a plugin read the composer's text only, so OMS can't read what an image or collapsed-paste chip stands for. Stashing a draft that holds one stops with a message and leaves the draft as it is: send or remove the chip first. Restoring a stash that has images puts its text in the composer with `[Image #N unavailable]` notes and names the images. The images stay in the stash, `Shift+Q` still sends them, and a pop keeps such a stash. If a stored image or paste is damaged or missing, OMS still restores the rest of the prompt and tells you which attachment it couldn't bring back.
 
 ![OhMyStash attachment restoration](assets/ohmystash-feature-attachments.gif)
 
@@ -317,20 +317,20 @@ The browser shows the newest stashes that fit. Delete or pop stashes you no long
 A new stash would go over the 256-stash or 16 MiB limit. The browser opens on every chat's stashes, so delete the ones you don't need there. Locked stashes count too.
 
 **`OMS attachment storage is full (1 GiB across all chats). ...`**
-Your stashed images and large pastes add up to 1 GiB. OMS already cleaned up unused attachments before saying this, so delete stashes that carry big attachments. Stashes without new attachments still save.
+Your stashed images and large pasted prompts add up to 1 GiB. OMS already cleaned up unused attachments before saying this, so delete stashes that carry big attachments. Stashes without new attachments still save.
 
 **`Restored prompt from ..., but couldn't restore Image #2 (damaged)`**
-The stored copy of that attachment failed its checks, so OMS restored everything else and left a plain `[Image #2 unavailable]` note where the image was. Stashing the same image again repairs the stored copy. `Shift+Q` puts such a stash in the composer instead of submitting it, so you can look first.
+The stored copy of that attachment failed its checks, so OMS restored everything else and left a plain `[Image #2 unavailable]` note where the image was. `Shift+Q` puts such a stash in the composer instead of sending it, so you can look first. A reason of `OMP doesn't let plugins attach images to the composer` means the image is fine and still in the stash: OMP 19.2 gives a plugin no way to put it back in the composer.
 
 **`That stash changed in another session, so OMS reloaded the browser`**
 Another OMP window locked, edited, or deleted that stash after your browser loaded it. Nothing was overwritten. Try again on the reloaded list.
 
-**`Restart OMP once so OhMyStash can attach to the native editor`**
-OhMyStash attaches to the composer when a session starts. Restart OMP after installing or updating it.
+**`OMS failed: The draft holds a pasted block or attachment, which OMP doesn't let OhMyStash read. ...`**
+The composer shows a pasted block or an image as a chip, and OMP 19.2 lets a plugin read only the chip's label. Send the draft, or remove the chip, then stash again.
 
 ## Development
 
-Use Bun 1.4.3. Development dependencies pin the official SDK packages to 18.19.0, with `^18.14.0 || ^19.0.0` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
+Use Bun 1.4.3. Development dependencies pin the official SDK packages to 19.2.1, with `^19.2.1` peers. `bun.lock` records the stock registry graph without custom overrides or local SDK archives.
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts

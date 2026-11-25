@@ -1,6 +1,6 @@
 {
   "name": "@hkay-dev/ohmystash",
-  "version": "1.17.7",
+  "version": "1.18.0",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.3",
@@ -33,14 +33,14 @@
     "capture:all": "bun run capture:browser && bun run capture:settings"
   },
   "peerDependencies": {
-    "@oh-my-pi/pi-ai": "^18.14.0 || ^19.0.0",
-    "@oh-my-pi/pi-coding-agent": "^18.14.0 || ^19.0.0",
-    "@oh-my-pi/pi-tui": "^18.14.0 || ^19.0.0"
+    "@oh-my-pi/pi-ai": "^19.2.1",
+    "@oh-my-pi/pi-coding-agent": "^19.2.1",
+    "@oh-my-pi/pi-tui": "^19.2.1"
   },
   "devDependencies": {
-    "@oh-my-pi/pi-ai": "18.19.0",
-    "@oh-my-pi/pi-coding-agent": "18.19.0",
-    "@oh-my-pi/pi-tui": "18.19.0",
+    "@oh-my-pi/pi-ai": "19.2.1",
+    "@oh-my-pi/pi-coding-agent": "19.2.1",
+    "@oh-my-pi/pi-tui": "19.2.1",
     "@types/bun": "1.4.3",
     "termcut": "1.0.0",
     "typescript": "7.0.2"

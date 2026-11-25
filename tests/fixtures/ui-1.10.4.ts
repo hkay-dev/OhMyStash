@@ -1,16 +1,18 @@
-// extensions/ui.ts exactly as released in 1.10.4 (tag v1.10.4). The parity tests render its
-// selectOption next to the current one, so leave this copy unchanged.
-import type { ExtensionContext, ExtensionCustomOptions, Theme } from "@oh-my-pi/pi-coding-agent";
-import { fuzzyFilter, Input, Key, matchesKey, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import { SYMBOL_PRESETS, type SymbolKey } from "@oh-my-pi/pi-tui/theme/symbols";
+// extensions/ui.ts as released in 1.10.4 (tag v1.10.4), with only the OMP imports and the calls to the
+// removed pi-tui key matcher, Input, and terminal size ported to OMP 19.2.1. The parity tests render its
+// selectOption next to the current one, so leave its drawing and key handling unchanged.
+import type { ExtensionContext, ExtensionCustomOptions, ExtensionTheme as Theme } from "@oh-my-pi/pi-coding-agent";
+import { fuzzyFilter } from "@oh-my-pi/pi-coding-agent/utils/fuzzy";
+import { truncate as truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui/text/width";
+import { presetSymbols } from "@oh-my-pi/pi-tui/theme/symbols";
+import { keyMatches, readKey, TextField as Input } from "../../extensions/ui";
 
 // OMP's stock bottom overlay, as Switch Model uses it: full width, up to every terminal row, no
 // backdrop. Closing it leaves the composer's text, undo history, and caret untouched.
 export const OVERLAY_OPTIONS = { overlay: true } as const satisfies ExtensionCustomOptions;
 
 export function extensionIcon(key: string): string {
-  const glyph = SYMBOL_PRESETS.nerd[key as SymbolKey];
-  return typeof glyph === "string" ? glyph : "";
+  return presetSymbols("nerd")[key] ?? "";
 }
 
 export function fitToWidth(text: string, width: number): string {
@@ -51,48 +53,40 @@ export function selectOption(
   options: string[],
   iconKey?: string,
 ): Promise<string | undefined> {
-  return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+  return ctx.ui.custom<string | undefined>((ui, theme, _keybindings, done) => {
     const searchInput = new Input();
     searchInput.prompt = "";
     searchInput.focused = true;
     let filtered = options;
     let selected = 0;
-    let pageRows = Math.max(1, Math.min(12, tui.terminal.rows - 5));
+    let pageRows = Math.max(1, Math.min(12, ui.size().rows - 5));
     const glyph = iconKey ? extensionIcon(iconKey) : "";
     const popupTitle = glyph ? `${glyph} ${title}` : title;
     const moveSelection = (index: number) => {
       selected = Math.max(0, Math.min(Math.max(0, filtered.length - 1), index));
-      tui.requestRender();
+      ui.requestRender();
     };
     const keyHint = (key: string, label: string) =>
       `${theme.fg("accent", key)} ${theme.fg("dim", label)}`;
     return {
-      get focused() {
-        return searchInput.focused;
-      },
-      set focused(value: boolean) {
-        searchInput.focused = value;
-      },
-      invalidate() {
-        searchInput.invalidate();
-      },
       handleInput(data: string) {
-        if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
+        const key = readKey(data);
+        if (keyMatches(key, "escape") || keyMatches(key, "ctrl+c")) {
           done(undefined);
-        } else if (matchesKey(data, Key.enter)) {
+        } else if (keyMatches(key, "enter")) {
           const option = filtered[selected];
           if (option !== undefined) done(option);
-        } else if (matchesKey(data, Key.up)) {
+        } else if (keyMatches(key, "up")) {
           moveSelection(selected - 1);
-        } else if (matchesKey(data, Key.down)) {
+        } else if (keyMatches(key, "down")) {
           moveSelection(selected + 1);
-        } else if (matchesKey(data, Key.home)) {
+        } else if (keyMatches(key, "home")) {
           moveSelection(0);
-        } else if (matchesKey(data, Key.end)) {
+        } else if (keyMatches(key, "end")) {
           moveSelection(filtered.length - 1);
-        } else if (matchesKey(data, Key.pageUp)) {
+        } else if (keyMatches(key, "pageUp")) {
           moveSelection(selected - pageRows);
-        } else if (matchesKey(data, Key.pageDown)) {
+        } else if (keyMatches(key, "pageDown")) {
           moveSelection(selected + pageRows);
         } else {
           const before = searchInput.getValue();
@@ -101,13 +95,13 @@ export function selectOption(
             filtered = fuzzyFilter(options, searchInput.getValue(), (option) => option);
             selected = 0;
           }
-          tui.requestRender();
+          ui.requestRender();
         }
       },
       render(width: number) {
         const renderWidth = Math.max(1, Math.floor(width));
         // The overlay may fill the terminal; OMP drops taller output from the top, title first.
-        const terminalRows = Math.max(1, tui.terminal.rows);
+        const terminalRows = Math.max(1, ui.size().rows);
         const contentWidth = Math.max(0, renderWidth - 2);
         const hints = contentWidth >= 64
           ? [keyHint("↑↓", "Move"), keyHint("PgUp/PgDn", "Page"), keyHint("Enter", "Select"), keyHint("Esc", "Close")].join("  ")

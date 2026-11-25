@@ -1,41 +1,219 @@
 import { stripVTControlCharacters } from "node:util";
-import type { ExtensionContext, ExtensionCustomOptions, Theme } from "@oh-my-pi/pi-coding-agent";
-import {
-  type Component,
-  type Focusable,
-  extractPrintableText,
-  fuzzyFilter,
-  Input,
-  Key,
-  type KeyId,
-  matchesKey,
-  type TUI,
-  truncateToWidth,
-  visibleWidth,
-} from "@oh-my-pi/pi-tui";
-import { SYMBOL_PRESETS, type SymbolKey } from "@oh-my-pi/pi-tui/theme/symbols";
+import type {
+  ExtensionContext,
+  ExtensionCustomOptions,
+  ExtensionRows,
+  ExtensionTheme,
+  ExtensionUiHost,
+} from "@oh-my-pi/pi-coding-agent";
+import { fuzzyFilter } from "@oh-my-pi/pi-coding-agent/utils/fuzzy";
+import type { KeyEvent } from "@oh-my-pi/pi-tui";
+import { decodeKey } from "@oh-my-pi/pi-tui/driver/input/keys";
+import { presetSymbols } from "@oh-my-pi/pi-tui/theme/symbols";
+import { truncate, visibleWidth } from "@oh-my-pi/pi-tui/text/width";
 import { collectNativeHost, pickNativeOption } from "./native-ui";
 
 // OMP's stock bottom overlay, as Switch Model uses it: full width, up to every terminal row, no
 // backdrop. Closing it leaves the composer's text, undo history, and caret untouched.
 export const OVERLAY_OPTIONS = { overlay: true } as const satisfies ExtensionCustomOptions;
 
+// The key label tables below read these keys, which every preset has. extensionIcon takes any key, so it checks.
+const nerd = presetSymbols("nerd") as Record<
+  | "key.alt"
+  | "key.altMac"
+  | "key.backspace"
+  | "key.ctrl"
+  | "key.ctrlMac"
+  | "key.delete"
+  | "key.enter"
+  | "key.esc"
+  | "key.shift"
+  | "key.space"
+  | "key.super"
+  | "key.superMac"
+  | "key.tab",
+  string
+>;
+
 export function extensionIcon(key: string): string {
-  const glyph = SYMBOL_PRESETS.nerd[key as SymbolKey];
-  return typeof glyph === "string" ? glyph : "";
+  return (nerd as Record<string, string | undefined>)[key] ?? "";
 }
 
 export function fitToWidth(text: string, width: number): string {
-  const clipped = truncateToWidth(text, Math.max(0, width));
+  const clipped = truncate(text, Math.max(0, width));
   return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 }
 
-export function createFrame(theme: Theme, width: number) {
+// A rows view gets each key as the raw terminal bytes, and OMP serves no key matcher for them, so this
+// decodes them with pi-tui's own decoder. Undefined for input that isn't one key, such as a paste.
+export function readKey(data: string): KeyEvent | undefined {
+  return decodeKey(data, { kitty: false, backspaceIsCtrl: false }) ?? undefined;
+}
+
+const MODIFIER_ORDER = ["ctrl", "alt", "shift", "super"];
+
+// An OMP key id with its modifiers in the decoder's order and its case ignored, so `shift+alt+x` and
+// `Alt+Shift+X` name the same key.
+function canonicalKeyId(id: string): string {
+  const parts = id.trim().toLowerCase().split("+");
+  const modifiers = MODIFIER_ORDER.filter((modifier) => parts.includes(modifier));
+  const base = parts.filter((part) => !MODIFIER_ORDER.includes(part)).join("+");
+  return [...modifiers, base].join("+");
+}
+
+/** Whether `key` is the OMP key id `id`, such as `enter`, `ctrl+o` or `alt+shift+s`. */
+export function keyMatches(key: KeyEvent | undefined, id: string): boolean {
+  return key !== undefined && canonicalKeyId(key.id) === canonicalKeyId(id);
+}
+
+const oneLine = (text: string): string =>
+  text.replace(/\r\n|\r|\n|\t/g, " ").replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * A one-line text field for a rows view. It edits from the raw input that `handleInput` of a rows view
+ * receives and draws its caret as a reversed cell while `focused`.
+ */
+export class TextField {
+  /** Drawn before the text. */
+  prompt = "";
+  focused = false;
+  #value = "";
+  #cursor = 0;
+
+  getValue(): string {
+    return this.#value;
+  }
+
+  setValue(value: string): void {
+    this.#value = oneLine(value);
+    this.#cursor = this.#value.length;
+  }
+
+  // The offsets of every grapheme start, and the end.
+  #stops(): number[] {
+    return [...Array.from(graphemes.segment(this.#value), (part) => part.index), this.#value.length];
+  }
+
+  #before(): number {
+    return this.#stops().findLast((stop) => stop < this.#cursor) ?? 0;
+  }
+
+  #after(): number {
+    return this.#stops().find((stop) => stop > this.#cursor) ?? this.#value.length;
+  }
+
+  #wordBefore(): number {
+    let at = this.#cursor;
+    while (at > 0 && this.#value[at - 1] === " ") at -= 1;
+    while (at > 0 && this.#value[at - 1] !== " ") at -= 1;
+    return at;
+  }
+
+  #wordAfter(): number {
+    let at = this.#cursor;
+    while (at < this.#value.length && this.#value[at] === " ") at += 1;
+    while (at < this.#value.length && this.#value[at] !== " ") at += 1;
+    return at;
+  }
+
+  #replace(from: number, to: number, text: string): void {
+    this.#value = this.#value.slice(0, from) + text + this.#value.slice(to);
+    this.#cursor = from + text.length;
+  }
+
+  handleInput(data: string): void {
+    const paste = /^\u001b\[200~([\s\S]*)\u001b\[201~$/.exec(data);
+    if (paste) {
+      this.#replace(this.#cursor, this.#cursor, oneLine(paste[1] ?? ""));
+      return;
+    }
+    const key = readKey(data);
+    if (!key) {
+      // Several typed characters that arrive together, which is not one key.
+      if (!/[\u0000-\u001f\u007f-\u009f]/.test(data)) this.#replace(this.#cursor, this.#cursor, oneLine(data));
+      return;
+    }
+    if (key.text !== undefined) {
+      this.#replace(this.#cursor, this.#cursor, oneLine(key.text));
+      return;
+    }
+    switch (key.id) {
+      case "left":
+      case "ctrl+b":
+        this.#cursor = this.#before();
+        break;
+      case "right":
+      case "ctrl+f":
+        this.#cursor = this.#after();
+        break;
+      case "ctrl+left":
+      case "alt+left":
+      case "alt+b":
+        this.#cursor = this.#wordBefore();
+        break;
+      case "ctrl+right":
+      case "alt+right":
+      case "alt+f":
+        this.#cursor = this.#wordAfter();
+        break;
+      case "home":
+      case "ctrl+a":
+        this.#cursor = 0;
+        break;
+      case "end":
+      case "ctrl+e":
+        this.#cursor = this.#value.length;
+        break;
+      case "backspace":
+        this.#replace(this.#before(), this.#cursor, "");
+        break;
+      case "delete":
+        this.#replace(this.#cursor, this.#after(), "");
+        break;
+      case "ctrl+w":
+      case "alt+backspace":
+      case "ctrl+backspace":
+        this.#replace(this.#wordBefore(), this.#cursor, "");
+        break;
+      case "alt+d":
+        this.#replace(this.#cursor, this.#wordAfter(), "");
+        break;
+      case "ctrl+u":
+        this.#replace(0, this.#cursor, "");
+        break;
+      case "ctrl+k":
+        this.#replace(this.#cursor, this.#value.length, "");
+        break;
+    }
+  }
+
+  /** One row: the prompt, then the text around the caret, clipped to `width`. */
+  render(width: number): string[] {
+    const room = Math.max(1, Math.floor(width) - visibleWidth(this.prompt));
+    if (!this.focused) return [`${this.prompt}${truncate(this.#value, room, "")}`];
+    const after = this.#after();
+    const caret = this.#cursor < this.#value.length ? this.#value.slice(this.#cursor, after) : " ";
+    const caretWidth = Math.max(1, visibleWidth(caret));
+    const rest = this.#value.slice(after);
+    // Keeps up to a third of the row for the text after the caret, and the rest for the text before it.
+    const beforeRoom = Math.max(0, room - caretWidth - Math.min(visibleWidth(rest), Math.floor(room / 3)));
+    let before = "";
+    for (const part of Array.from(graphemes.segment(this.#value.slice(0, this.#cursor))).reverse()) {
+      if (visibleWidth(part.segment + before) > beforeRoom) break;
+      before = part.segment + before;
+    }
+    const tail = truncate(rest, Math.max(0, room - caretWidth - visibleWidth(before)), "");
+    return [`${this.prompt}${before}\u001b[7m${caret}\u001b[27m${tail}`];
+  }
+}
+
+export function createFrame(theme: ExtensionTheme, width: number) {
   const renderWidth = Math.max(1, Math.floor(width));
   const contentWidth = Math.max(0, renderWidth - 2);
   const border = (text: string) => theme.fg("accent", text);
   const heading = (label: string) =>
-    theme.fg("accent", theme.bold(truncateToWidth(` ${label} `, contentWidth, "")));
+    theme.fg("accent", theme.bold(truncate(` ${label} `, contentWidth, "")));
   const line = (left: string, content: string, right: string) =>
     renderWidth === 1 ? border(left) : `${border(left)}${content}${border(right)}`;
   return {
@@ -82,7 +260,7 @@ export interface ShortcutHintDeclaration {
 // a PC keyboard. Shift is ⇧ everywhere. Modifiers are in macOS menu order (⌃⌥⇧⌘), which is how they render
 // whatever order a key lists them in.
 type KeyLabel = readonly [icon: string, text: string];
-const nerd = SYMBOL_PRESETS.nerd;
+// `nerd` is the Nerd Font preset above.
 const MAC_MODIFIER_LABELS: Record<string, KeyLabel> = {
   ctrl: [nerd["key.ctrlMac"], "Ctrl"],
   alt: [nerd["key.altMac"], "Alt"],
@@ -190,7 +368,7 @@ export interface ListRowContext {
   width: number;
   /** True for the selected item. */
   selected: boolean;
-  theme: Theme;
+  theme: ExtensionTheme;
   /** True in the short-terminal layout, which shows one row per item. */
   compact: boolean;
 }
@@ -261,17 +439,17 @@ export interface ListOptions<T, R> {
   toggleKey?: string;
 }
 
-/** The list as a component, for a plugin that shows it inside its own overlay component. */
-export interface ListComponent<T> extends Component, Focusable {
+/** The list as a rows view, for a plugin that shows it inside its own overlay view. */
+export interface ListComponent<T> extends ExtensionRows {
   handleInput(data: string): void;
-  invalidate(): void;
+  render(width: number): string[];
   /** Selects the listed item with the same `id`, if there is one. */
   select(item: T): void;
 }
 
 interface ListView<T> extends ListState<T> {
-  theme: Theme;
-  input: Input;
+  theme: ExtensionTheme;
+  input: TextField;
   /** Terminal rows, at least 1. */
   rows: number;
   /** The selected match's index, 0 when nothing matches. */
@@ -287,19 +465,18 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 // Search, selection, keys, and actions, shared by every list. The layout draws the list and reports how
 // many items PgUp and PgDn move.
 function listComponent<T, R>(
-  tui: TUI,
-  theme: Theme,
+  ui: ExtensionUiHost,
+  theme: ExtensionTheme,
   options: ListOptions<T, R>,
   done: (result: R | undefined) => void,
   layout: ListLayout<T>,
   // Rows that PgUp and PgDn move before the first render. A function is asked again on every key, so a
   // resize changes the step; a number is replaced by what each render reports.
   initialPageSize: number | (() => number),
-  terminalCursor: boolean,
 ): ListComponent<T> {
   let drawnPageSize = typeof initialPageSize === "number" ? initialPageSize : 1;
   const pageSize = (): number => (typeof initialPageSize === "function" ? initialPageSize() : drawnPageSize);
-  const input = new Input();
+  const input = new TextField();
   input.prompt = "";
   input.focused = true;
   const source = options.items;
@@ -314,7 +491,7 @@ function listComponent<T, R>(
     });
   };
   const toggle = options.toggleKey?.trim() ?? "";
-  const toggleKey = toggle && toggle.toLowerCase() !== "none" ? (toggle as KeyId) : undefined;
+  const toggleKey = toggle && toggle.toLowerCase() !== "none" ? toggle : undefined;
   let filtered: { items: readonly T[]; query: string; matches: readonly T[] } | undefined;
   let index = 0;
   // The selected item's id, so the selection stays on that item when the items change. Without an `id`
@@ -348,7 +525,7 @@ function listComponent<T, R>(
     }
     const selected = matches[index];
     anchorOn(selected, index < matches.length);
-    return { theme, input, rows: Math.max(1, tui.terminal.rows), query, matches, total: items.length, selected, index };
+    return { theme, input, rows: Math.max(1, ui.size().rows), query, matches, total: items.length, selected, index };
   };
   const settle = (result: unknown): void => {
     if (isPromiseLike(result)) {
@@ -360,53 +537,45 @@ function listComponent<T, R>(
         },
         () => {
           pending = false;
-          tui.requestRender();
+          ui.requestRender();
         },
       );
     } else if (result === undefined) {
-      tui.requestRender();
+      ui.requestRender();
     } else {
       done(result as R);
     }
   };
-  const component: ListComponent<T> = {
-    get focused() {
-      return input.focused;
-    },
-    set focused(value: boolean) {
-      input.focused = value;
-    },
-    invalidate() {
-      input.invalidate();
-    },
+  return {
     select(item: T) {
       anchorOn(item, true);
       index = 0;
-      tui.requestRender();
+      ui.requestRender();
     },
     handleInput(data: string) {
+      const key = readKey(data);
       // A bare printable key, shifted letters and space included, types into a focused search field.
-      const typed = input.focused && extractPrintableText(data) !== undefined;
+      const typed = input.focused && key?.text !== undefined;
       if (
-        matchesKey(data, Key.escape) ||
-        matchesKey(data, Key.ctrl("c")) ||
-        (!typed && toggleKey !== undefined && matchesKey(data, toggleKey))
+        keyMatches(key, "escape") ||
+        keyMatches(key, "ctrl+c") ||
+        (!typed && toggleKey !== undefined && keyMatches(key, toggleKey))
       ) {
         done(undefined);
         return;
       }
-      const action = typed ? undefined : options.actions?.find((candidate) => matchesKey(data, candidate.key as KeyId));
+      const action = typed ? undefined : options.actions?.find((candidate) => keyMatches(key, candidate.key));
       const list = view();
       if (action) {
         if (!pending) settle(action.run(list.selected));
         return;
       }
-      const target = matchesKey(data, Key.up) ? list.index - 1
-        : matchesKey(data, Key.down) ? list.index + 1
-        : matchesKey(data, Key.home) ? 0
-        : matchesKey(data, Key.end) ? list.matches.length - 1
-        : matchesKey(data, Key.pageUp) ? list.index - pageSize()
-        : matchesKey(data, Key.pageDown) ? list.index + pageSize()
+      const target = keyMatches(key, "up") ? list.index - 1
+        : keyMatches(key, "down") ? list.index + 1
+        : keyMatches(key, "home") ? 0
+        : keyMatches(key, "end") ? list.matches.length - 1
+        : keyMatches(key, "pageUp") ? list.index - pageSize()
+        : keyMatches(key, "pageDown") ? list.index + pageSize()
         : undefined;
       if (target === undefined) {
         const before = input.getValue();
@@ -419,7 +588,7 @@ function listComponent<T, R>(
         index = Math.max(0, Math.min(list.matches.length - 1, target));
         anchorOn(list.matches[index], index < list.matches.length);
       }
-      tui.requestRender();
+      ui.requestRender();
     },
     render(width: number) {
       const drawn = layout(view(), width);
@@ -427,8 +596,6 @@ function listComponent<T, R>(
       return drawn.lines;
     },
   };
-  if (terminalCursor) component.setUseTerminalCursor = (value: boolean) => input.setUseTerminalCursor(value);
-  return component;
 }
 
 function drawList<T, R>(options: ListOptions<T, R>, list: ListView<T>, width: number) {
@@ -529,16 +696,16 @@ function drawList<T, R>(options: ListOptions<T, R>, list: ListView<T>, width: nu
 }
 
 /**
- * The searchable list as a component, for a plugin that shows it inside its own overlay component. `done`
+ * The searchable list as a rows view, for a plugin that shows it inside its own overlay view. `done`
  * receives an action's result, or undefined when Esc, Ctrl+C, or the toggle key closes the list.
  */
 export function createList<T, R>(
-  tui: TUI,
-  theme: Theme,
+  ui: ExtensionUiHost,
+  theme: ExtensionTheme,
   options: ListOptions<T, R>,
   done: (result: R | undefined) => void,
 ): ListComponent<T> {
-  return listComponent(tui, theme, options, done, (list, width) => drawList(options, list, width), 1, true);
+  return listComponent(ui, theme, options, done, (list, width) => drawList(options, list, width), 1);
 }
 
 /**
@@ -547,7 +714,7 @@ export function createList<T, R>(
  */
 export function showList<T, R>(ctx: ExtensionContext, options: ListOptions<T, R>): Promise<R | undefined> {
   return ctx.ui.custom<R | undefined>(
-    (tui, theme, _keybindings, done) => createList(tui, theme, options, done),
+    (ui, theme, _keybindings, done) => createList(ui, theme, options, done),
     OVERLAY_OPTIONS,
   );
 }
@@ -571,8 +738,8 @@ function drawOptions(title: string, list: ListView<string>, width: number, icons
   const emptyLabel = list.total === 0 ? "No options available" : "No matching options";
   if (terminalRows < 3 || renderWidth < 4) {
     const lines = [
-      theme.fg("accent", theme.bold(truncateToWidth(option ?? emptyLabel, renderWidth, ""))),
-      truncateToWidth(searchInput.getValue() ? `/${searchInput.getValue()}` : hints, renderWidth, ""),
+      theme.fg("accent", theme.bold(truncate(option ?? emptyLabel, renderWidth, ""))),
+      truncate(searchInput.getValue() ? `/${searchInput.getValue()}` : hints, renderWidth, ""),
     ].slice(0, terminalRows);
     return { lines, pageSize: 1 };
   }
@@ -658,7 +825,7 @@ function selectOptionInTerminal(
   iconKey: string | undefined,
   settings: SelectOptionSettings | undefined,
 ): Promise<string | undefined> {
-  return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+  return ctx.ui.custom<string | undefined>((ui, theme, _keybindings, done) => {
     const icons = settings?.icons ?? true;
     const glyph = icons && iconKey ? extensionIcon(iconKey) : "";
     const popupTitle = glyph ? `${glyph} ${title}` : title;
@@ -670,7 +837,7 @@ function selectOptionInTerminal(
       actions: [{ key: "enter", label: "Select", run: (option) => option }],
       ...(settings?.selected === undefined ? {} : { selected: settings.selected }),
     };
-    const pageSize = () => Math.max(1, Math.min(12, tui.terminal.rows - 5));
-    return listComponent(tui, theme, list, done, (view, width) => drawOptions(popupTitle, view, width, icons), pageSize, false);
+    const pageSize = () => Math.max(1, Math.min(12, ui.size().rows - 5));
+    return listComponent(ui, theme, list, done, (view, width) => drawOptions(popupTitle, view, width, icons), pageSize);
   }, OVERLAY_OPTIONS);
 }

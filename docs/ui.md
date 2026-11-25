@@ -1,8 +1,8 @@
 # Shared picker UI
 
-OhMyStash exports its picker helpers at `@hkay-dev/ohmystash/ui`, so other OMP plugins can draw the same frames, lists, and key labels. They use only stock public SDK exports.
+OhMyStash exports its picker helpers at `@hkay-dev/ohmystash/ui`, so other OMP plugins can draw the same frames, lists, and key labels. They use only stock public SDK exports and need OMP 19.2.1 or newer.
 
-To use them, add OhMyStash as a package dependency of your plugin, for example `github:hkay-dev/OhMyStash#v1.17.1`. OMP installs declared dependencies through its normal package manager before it loads your extension. Copying a single extension file, or linking extracted files without installing dependencies, doesn't supply the module.
+To use them, add OhMyStash as a package dependency of your plugin, for example `github:hkay-dev/OhMyStash#v1.18.0`. OMP installs declared dependencies through its normal package manager before it loads your extension. Copying a single extension file, or linking extracted files without installing dependencies, doesn't supply the module.
 
 ## Exports
 
@@ -15,7 +15,9 @@ To use them, add OhMyStash as a package dependency of your plugin, for example `
   - `selected`: the option to select when the picker opens. If it isn't one of the options, the first one is selected.
   - `native`: `{ events, id }`, where `events` is your plugin's `pi.events` and `id` is a stable name for the dialog, such as `my-plugin.models`. When a [native UI host](native-ui.md) answers on that bus, the options open as a native dialog through it and the result is the same string, or `undefined` on cancel. When no host answers, or the host fails to show the list, the terminal picker opens instead. Without `native`, nothing changes.
 - `showList(ctx, options)` opens a searchable list of any items in the overlay. It resolves to the result of the footer action that closed it, or `undefined` when Esc, Ctrl+C, or the optional `toggleKey` closes it.
-- `createList(tui, theme, options, done)` returns the same list as a component, for a plugin that shows it inside its own overlay component. Its `select(item)` moves the selection.
+- `createList(ui, theme, options, done)` returns the same list as a rows view (`{ render(width), handleInput(data), select(item) }`), for a plugin that shows it inside its own overlay view. `ui` and `theme` are the first two arguments OMP gives the `ctx.ui.custom` factory. Return the list from that factory, or call its `render` and `handleInput` from your own rows view. Its `select(item)` moves the selection.
+- `readKey(data)` decodes the raw terminal input that a rows view's `handleInput` receives into one key event, or `undefined` when the input isn't one key, such as a paste. `keyMatches(key, id)` tells whether that event is the OMP key id `id`, such as `enter` or `alt+shift+s`, whatever the order or case of its modifiers.
+- `TextField` is a one-line text field for a rows view. Pass it the raw input in `handleInput`, read `getValue()`, set `focused`, and draw it with `render(width)`, which shows the caret as a reversed cell.
 - `formatShortcut(key, { icons })` formats an OMP key id such as `alt+shift+s`. On macOS it draws Nerd Font Apple keyboard icons in macOS menu order, separated by spaces; on other systems it writes `Ctrl`, `Alt` and `Super` as words joined with `+`, as OMP does. With `icons: false` it gives plain text such as `Alt+Shift+S` (`Cmd` on macOS, `Super` elsewhere). `cmd`, `opt`, `option` and `control` count as `super`, `alt`, `alt` and `ctrl`. A blank key, `none`, or a key with a modifier it doesn't know gives an empty string.
 - `formatShortcutRange(keys, { icons })` formats several keys and skips blank and `none` keys. Three or more keys with the same modifiers and consecutive digits collapse into one range, such as `Alt+1-5`.
 - `ShortcutHintDeclaration` types one entry of the `hkay.shortcutHints` package field described below.
@@ -26,7 +28,7 @@ To use them, add OhMyStash as a package dependency of your plugin, for example `
 | --- | --- |
 | `items` | The items, or a function that returns the current items of a list that changes while it's open. |
 | `title` | The frame title, or a function of `{ query, matches, total, selected }`, for example to show match counts. |
-| `renderItem(item, { width, selected, theme, compact })` | One row per item, or two rows for two-line items. The compact layout shows only the first row. |
+| `renderItem(item, { width, selected, theme, compact })` | One row per item, or two rows for two-line items. The compact layout shows only the first row. `theme` is OMP's extension theme. |
 | `search(item)` | The text that every search word must appear in, ignoring case. Defaults to `String(item)`. |
 | `filter(items, query)` | Replaces that search with your own matching and order. |
 | `id(item)` | Keeps the selection on the same item when the items change. Pass it when `items()` builds new objects. Without it, the selection follows the same object, or else the first item with the same search text. |

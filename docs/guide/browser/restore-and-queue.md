@@ -13,7 +13,7 @@ Open the [stash browser](index.md), pick a stash, and press one key to bring it 
 
 ## The composer has to be empty
 
-Restoring, queueing and popping only work on an empty composer. A draft that holds only images counts as content too. If the composer isn't empty, OMS shows this warning and leaves the stash and your draft alone:
+Restoring, queueing and popping only work on an empty composer. A draft that holds only an image chip counts as content too. If the composer isn't empty, OMS shows this warning and leaves the stash and your draft alone:
 
 ```
 Stash or clear the current editor before restoring a prompt
@@ -34,7 +34,7 @@ A stash that was saved as a `/queue` draft comes back with `/queue ` in front wh
 
 ### Restore
 
-Press `Enter`. The prompt lands in the composer, with its [images and large pastes](../attachments.md), and the browser closes. OMS says `Restored prompt from <time>; restore never deletes stash files`. Restoring never removes the stash, so you can bring it back again later.
+Press `Enter`. The prompt lands in the composer, and the browser closes. A prompt over 1 MiB comes back whole. A stash with images comes back as text, with `[Image #1 unavailable]` where each image was, because OMP 19.2 gives a plugin no way to put an image in the composer; see [images and large pastes](../attachments.md). OMS says `Restored prompt from <time>; restore never deletes stash files`. Restoring never removes the stash, so you can bring it back again later.
 
 ### Queue draft
 
@@ -44,14 +44,14 @@ Press `q`. The stash goes into the composer as a `/queue` draft you can still ch
 
 ### Submit to the queue
 
-Press `Shift+Q`. OMS puts `/queue ` in front of the stash and submits it straight away. The browser stays open on the same stash, so you can press `Shift+Q` again to stack more messages in OMP's queue. Press `Esc` when you're done.
+Press `Shift+Q`. OMS sends the stash as a queued message straight away, with its images: an idle session starts a turn with it, and a busy one queues it after the current turn. The browser stays open on the same stash, so you can press `Shift+Q` again to stack more messages in OMP's queue. Press `Esc` when you're done.
 
 ![A stash submitted as a queue message](../../../assets/ohmystash-feature-submit-queue.gif)
 
-If one of the stash's attachments can't be read, OMS doesn't submit a partial prompt. It puts the stash in the composer as a draft instead, closes the browser, and says:
+If one of the stash's attachments can't be read, OMS doesn't send a partial prompt. It puts the stash in the composer as a draft instead, closes the browser, and says:
 
 ```
-Inserted the queued draft without submitting it, because it's missing <what's missing>. The stash file is unchanged
+Inserted the queued draft without submitting it, because <what couldn't be restored> couldn't be restored. The stash file is unchanged
 ```
 
 Check the draft, then send it yourself if it still makes sense.

@@ -13,10 +13,10 @@ One key does both jobs. `Alt+S` stashes the prompt in your composer, or restores
 
 ## Stash the prompt you're writing
 
-1. Type a prompt in the composer. Add images or paste large text if you like.
+1. Type a prompt in the composer.
 2. Press `Alt+S`.
 
-OMS saves the prompt and clears the composer. A notice tells you what was saved, for example `Prompt stashed (3 lines)`. With images or large pastes it adds the count, such as `Prompt stashed (3 lines with 2 attachments)`. Those come back with the prompt: see [Images and large pastes](attachments.md).
+OMS saves the prompt and clears the composer. A notice tells you what was saved, for example `Prompt stashed (3 lines)`. A prompt over 1 MiB is stored as a file and counts as one attachment: see [Images and large pastes](attachments.md). A draft that holds a pasted block or an image can't be stashed, because OMP 19.2 lets a plugin read only the composer's text; OMS says so and leaves the draft as it is.
 
 If there's nothing to stash, OMS says `Nothing to stash`.
 

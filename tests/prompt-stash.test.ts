@@ -15,19 +15,21 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionTheme } from "@oh-my-pi/pi-coding-agent";
 import { refreshDirsFromEnv } from "@oh-my-pi/pi-utils";
-import type { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components";
-import type * as Tui from "@oh-my-pi/pi-tui";
+import type * as Width from "@oh-my-pi/pi-tui/text/width";
 import type * as PopupUi from "../extensions/ui";
 import type * as ExternalEditor from "@oh-my-pi/pi-coding-agent/utils/external-editor";
+import { bodyAttachment, imageAttachment } from "./fixtures/stash-assets";
 
-let visibleWidth: typeof Tui.visibleWidth;
+let visibleWidth: typeof Width.visibleWidth;
 let createFrame: typeof PopupUi.createFrame;
 let extensionIcon: typeof PopupUi.extensionIcon;
 let selectOption: typeof PopupUi.selectOption;
 let externalEditor: typeof ExternalEditor;
 let restoreEditors: (() => void) | undefined;
+// What pi.sendUserMessage was asked to send.
+const sentMessages: Array<{ content: unknown; options: unknown }> = [];
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 const previousConfigDir = process.env.PI_CONFIG_DIR;
 
@@ -54,7 +56,7 @@ const TEST_ORIGIN = {
 const MAIN_AGENT = { kind: "main", id: "Main", name: "main", depth: 0 } as const;
 // Reloads the plugin settings the way OMP's session_start does.
 const CONFIG_CONTEXT = {
-  cwd: agentDir, mode: "tui", agent: MAIN_AGENT, ui: { setEditorComponent() {} },
+  cwd: agentDir, mode: "tui", agent: MAIN_AGENT, ui: {},
 } as unknown as ExtensionContext;
 let stashCommand: { handler: (args: string, ctx: ExtensionContext) => Promise<void> | void };
 let stashShortcut: { handler: (ctx: ExtensionContext) => Promise<void> | void };
@@ -68,12 +70,21 @@ const TEST_THEME = {
   symbol: (name: string) => name,
 };
 
+// What OMP's ctx.ui.custom hands a view: the terminal size, a repaint request, and suspend.
+function uiHost(rows: number, hooks: { suspend?: <R>(run: () => Promise<R>) => Promise<R> } = {}) {
+  return {
+    size: () => ({ columns: 120, rows }),
+    requestRender() {},
+    suspend: hooks.suspend ?? (<R>(run: () => Promise<R>) => run()),
+  };
+}
+
 function browserComponent(
   factory: Function,
   done: Function,
   terminal = { rows: 60, write: (_data: string) => {} },
 ) {
-  return factory({ terminal, requestRender() {} }, TEST_THEME, undefined, done);
+  return factory(uiHost(terminal.rows), TEST_THEME, undefined, done);
 }
 
 const projectConfigDir = join(agentDir, ".omp");
@@ -97,6 +108,7 @@ function writeStashFixture(
   text: string,
   origin: unknown = TEST_ORIGIN,
   inputMode: "normal" | "queue" = "normal",
+  attachments: unknown[] = [],
 ) {
   const id = randomUUID();
   const stashedAt = nextFixtureTime();
@@ -113,13 +125,19 @@ function writeStashFixture(
       inputMode,
       stashedAt,
       ...(origin === null ? {} : { origin }),
-      attachments: [],
+      attachments,
       locked: false,
       preserved: false,
     })}\n`,
     { mode: 0o600 },
   );
   return { id, path, stashedAt };
+}
+
+// A stash from `sessionId` with attachments, as another writer stores them: OMP 19.2 doesn't let a plugin
+// read a composer's images or pasted blocks.
+function writeRawEntry(sessionId: string, text: string, attachments: unknown[]) {
+  return writeStashFixture(text, { ...TEST_ORIGIN, sessionId }, "normal", attachments);
 }
 
 // Every test starts from the same stash: one "test prompt" entry from this chat.
@@ -130,7 +148,14 @@ function resetStash(seed = true): void {
   if (seed) writeStashFixture("test prompt");
 }
 
-function readEntries(): Array<{ id: string; text: string; locked?: boolean; path: string }> {
+function readEntries(): Array<{
+  id: string;
+  text: string;
+  locked?: boolean;
+  path: string;
+  origin?: { sessionId?: string };
+  attachments: Array<{ kind: string }>;
+}> {
   const stashDir = join(agentDir, "prompt-stash");
   return readdirSync(stashDir)
     .filter((file) => file.endsWith(".json"))
@@ -145,7 +170,7 @@ beforeAll(async () => {
   // Test files share one module registry, so another file may already have frozen the agent dir.
   refreshDirsFromEnv();
   // Static SDK imports would cache paths before the test profile is bound.
-  ({ visibleWidth } = await import("@oh-my-pi/pi-tui"));
+  ({ visibleWidth } = await import("@oh-my-pi/pi-tui/text/width"));
   externalEditor = await import("@oh-my-pi/pi-coding-agent/utils/external-editor");
   ({ createFrame, extensionIcon, selectOption } = await import("../extensions/ui"));
   writeSettings({ "Time format": "12-hour clock" });
@@ -161,6 +186,10 @@ beforeAll(async () => {
     on(event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) {
       if (event === "session_start") refreshConfig = settled(handler);
       if (event === "session_switch") switchSession = settled(handler);
+    },
+    sendUserMessage(content: unknown, options: unknown) {
+      sentMessages.push({ content, options });
+      return Promise.resolve();
     },
     registerShortcut(key: string, shortcut: typeof stashShortcut) {
       if (key === "alt+s") stashShortcut = shortcut;
@@ -266,27 +295,16 @@ test("search types q and Q one key per event, and Tab hands the letters back to 
   expect(restored?.editor).toBe("Write the SQL migration");
 });
 
-test("submits repeated Shift+Q actions as ordered slash queue commands", async () => {
-  const sessionManager = { ...TEST_SESSION_MANAGER };
-  const submissions: string[] = [];
-  let editor!: CustomEditor;
+test("submits repeated Shift+Q actions as ordered queued user messages", async () => {
+  let draft = "";
   let browserCalls = 0;
   const context = {
     cwd: agentDir,
     mode: "tui",
     agent: MAIN_AGENT,
-    sessionManager,
+    sessionManager: { ...TEST_SESSION_MANAGER },
+    isIdle: () => true,
     ui: {
-      setEditorComponent(factory: Function) {
-        editor = factory(
-          { enableScopedInputRender() {} },
-          { symbols: {}, borderColor: (text: string) => text },
-          {},
-        );
-        editor.onSubmit = (text: string) => {
-          submissions.push(text);
-        };
-      },
       custom(factory: Function) {
         const { promise, resolve } = Promise.withResolvers<unknown>();
         const component = browserComponent(factory, resolve, { rows: 40, write: () => {} });
@@ -305,99 +323,89 @@ test("submits repeated Shift+Q actions as ordered slash queue commands", async (
         browserCalls += 1;
         return promise;
       },
-      getEditorText: () => editor.getText(),
+      getEditorText: () => draft,
       setEditorText(value: string) {
-        editor.setText(value);
-      },
-      pasteToEditor(value: string) {
-        editor.handleInput(`\u001b[200~${value}\u001b[201~`);
+        draft = value;
       },
       notify() {},
     },
   } as unknown as ExtensionContext;
   await refreshConfig?.({}, context);
+  sentMessages.length = 0;
 
   await stashCommand.handler("", context);
 
   expect(browserCalls).toBe(3);
-  expect(submissions).toEqual(["/queue test prompt", "/queue test prompt"]);
+  expect(sentMessages).toEqual([
+    { content: "test prompt", options: undefined },
+    { content: "test prompt", options: undefined },
+  ]);
+  expect(draft).toBe("");
 
-  for (const text of ["unfinished draft", "/queue unfinished draft", "[Image #1]"]) {
-    const images = text === "[Image #1]" ? [{ type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" }] : [];
-    editor.setDraft(text, images);
+  // A draft in progress blocks both submissions and stays as it is.
+  for (const text of ["unfinished draft", "/queue unfinished draft"]) {
+    draft = text;
     browserCalls = 0;
-    submissions.length = 0;
+    sentMessages.length = 0;
     await stashCommand.handler("", context);
-    expect(editor.getExpandedText()).toBe(text);
-    expect(editor.pendingImages).toEqual(images);
-    expect(submissions).toEqual([]);
+    expect(draft).toBe(text);
+    expect(sentMessages).toEqual([]);
   }
-  editor.clearDraft();
 });
 
-test("protects image-only drafts and round-trips 64 repeated images", async () => {
+test("restores an image-only stash as unavailable markers and refuses to stash a draft of image chips", async () => {
   const sessionId = randomUUID();
-  const fixture = writeStashFixture("image-only restore target", { ...TEST_ORIGIN, sessionId });
-  let editor!: CustomEditor;
+  const attachmentRoot = join(agentDir, "prompt-stash");
+  const markers = Array.from({ length: 64 }, (_, index) => `[Image #${index + 1}]`).join(" ");
+  const fixture = writeStashFixture(markers, { ...TEST_ORIGIN, sessionId });
+  const stored = JSON.parse(readFileSync(fixture.path, "utf8"));
+  stored.attachments = Array.from({ length: 64 }, (_, index) => imageAttachment(attachmentRoot, `picture ${index}`));
+  writeFileSync(fixture.path, JSON.stringify(stored), { mode: 0o600 });
+  let draft = "";
   let action = "\r";
   let calls = 0;
-  const images = Array.from({ length: 64 }, () => ({
-    type: "image" as const, data: "aGVsbG8=", mimeType: "image/png",
-  }));
-  const markers = Array.from({ length: 64 }, (_, index) => `[Image #${index + 1}]`).join(" ");
+  const notices: string[] = [];
   const context = {
     cwd: agentDir, mode: "tui", agent: MAIN_AGENT,
     sessionManager: { ...TEST_SESSION_MANAGER, getSessionId: () => sessionId },
     ui: {
-      setEditorComponent(factory: Function) {
-        editor = factory({}, { symbols: {}, borderColor: (text: string) => text }, {});
-      },
       custom(factory: Function) {
         const { promise, resolve } = Promise.withResolvers<unknown>();
         const component = browserComponent(factory, resolve);
         component.handleInput(calls++ === 0 ? action : "\u001b");
         return promise;
       },
-      getEditorText: () => editor.getText(),
-      notify() {},
+      getEditorText: () => draft,
+      setEditorText(value: string) {
+        draft = value;
+      },
+      notify(message: string) {
+        notices.push(message);
+      },
     },
   } as unknown as ExtensionContext;
   try {
     await refreshConfig?.({}, context);
-    editor.setDraft(markers, images);
     await stashCommand.handler("restore", context);
-    expect(editor.pendingImages).toEqual(images);
-    expect(editor.getExpandedText()).toBe(markers);
+    const unavailable = markers.replaceAll("]", " unavailable]");
+    expect(draft).toBe(unavailable);
+    expect(notices.at(-1)).toContain("couldn't restore Image #1, Image #2");
     for (action of ["\r", "q"]) {
       calls = 0;
       await stashCommand.handler("", context);
-      expect(editor.pendingImages).toEqual(images);
-      expect(editor.getExpandedText()).toBe(markers);
+      expect(draft).toBe(unavailable);
     }
-    await stashShortcut.handler(context);
-    expect(editor.pendingImages).toEqual([]);
-    const saved = readdirSync(join(agentDir, "prompt-stash"))
-      .filter((name) => name.endsWith(".json"))
-      .map((name) => JSON.parse(readFileSync(join(agentDir, "prompt-stash", name), "utf8")))
-      .find((entry) => entry.origin?.sessionId === sessionId && entry.id !== fixture.id);
-    expect(saved?.attachments).toHaveLength(64);
-    expect(saved?.text).toBe(markers);
-    rmSync(fixture.path);
-    await stashCommand.handler("restore", context);
-    expect(editor.pendingImages).toEqual(images);
-    expect(editor.getExpandedText()).toBe(markers);
 
-    // Recreating a missing display alias must not reject the next duplicate image.
-    const hash = saved.attachments[0].ref.slice("sha256:".length);
-    unlinkSync(join(agentDir, "prompt-stash", "attachments", `${hash}.png`));
+    // OMP lets a plugin read the chips' labels only, so the draft can't be stashed with its images.
+    draft = markers;
     await stashShortcut.handler(context);
-    expect(editor.pendingImages).toEqual([]);
-    await stashCommand.handler("restore", context);
-    expect(editor.pendingImages).toEqual(images);
+    expect(draft).toBe(markers);
+    expect(notices.at(-1)).toContain("pasted block or attachment");
+    expect(readEntries().filter((entry) => entry.origin?.sessionId === sessionId)).toHaveLength(1);
   } finally {
-    for (const name of readdirSync(join(agentDir, "prompt-stash"))) {
+    for (const name of readdirSync(attachmentRoot)) {
       if (!name.endsWith(".json")) continue;
-      const path = join(agentDir, "prompt-stash", name);
+      const path = join(attachmentRoot, name);
       if (JSON.parse(readFileSync(path, "utf8")).origin?.sessionId === sessionId) rmSync(path);
     }
   }
@@ -475,8 +483,7 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
   delete process.env.EDITOR;
   let browserCalls = 0;
   let editorCalls = 0;
-  let stopCalls = 0;
-  let startCalls = 0;
+  let suspendCalls = 0;
   let editedValue = "edited test prompt";
   const context = {
     cwd: agentDir,
@@ -487,16 +494,12 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
       custom(factory: Function) {
         const { promise, resolve } = Promise.withResolvers<unknown>();
         const component = factory(
-          {
-            terminal: { rows: 60, write: () => {} },
-            requestRender() {},
-            stop() {
-              stopCalls += 1;
+          uiHost(60, {
+            suspend: (run) => {
+              suspendCalls += 1;
+              return run();
             },
-            start() {
-              startCalls += 1;
-            },
-          },
+          }),
           TEST_THEME,
           undefined,
           resolve,
@@ -531,8 +534,7 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
     await refreshConfig?.({}, CONFIG_CONTEXT);
     await stashCommand.handler("", context);
     expect(editorCalls).toBe(1);
-    expect(stopCalls).toBe(0);
-    expect(startCalls).toBe(0);
+    expect(suspendCalls).toBe(0);
     expect(
       readdirSync(join(agentDir, "prompt-stash"))
         .filter((file) => file.endsWith(".json"))
@@ -550,8 +552,7 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
     await refreshConfig?.({}, CONFIG_CONTEXT);
     await stashCommand.handler("", context);
     expect(editorCalls).toBe(0);
-    expect(stopCalls).toBe(1);
-    expect(startCalls).toBe(1);
+    expect(suspendCalls).toBe(1);
   } finally {
     if (previousVisual === undefined) delete process.env.VISUAL;
     else process.env.VISUAL = previousVisual;
@@ -562,46 +563,24 @@ test("edits a stash with OMP's editor and honors an explicit editor command", as
   }
 });
 
-test("round-trips an OMP image plus a file-backed large paste and queues it with Shift+Q", async () => {
-  const sessionManager = { ...TEST_SESSION_MANAGER };
-  let editor!: CustomEditor;
+test("restores a large pasted body with its text, sends it with its images on Shift+Q, and names damaged images", async () => {
+  const sessionId = randomUUID();
+  const attachmentRoot = join(agentDir, "prompt-stash");
+  let draft = "";
   let browserCalls = 0;
   let browserMode: "restore" | "queue" = "restore";
   const notifications: string[] = [];
   const errors: string[] = [];
-  const submittedQueuePrompts: string[] = [];
-  const submittedQueueImages: string[][] = [];
-  const editorTheme = {
-    symbols: {},
-    borderColor: (text: string) => text,
-  };
   const context = {
     cwd: agentDir,
     mode: "tui",
     agent: MAIN_AGENT,
-    sessionManager,
+    sessionManager: { ...TEST_SESSION_MANAGER, getSessionId: () => sessionId },
+    isIdle: () => true,
     ui: {
-      setEditorComponent(factory: Function) {
-        editor = factory(
-          {},
-          editorTheme,
-          {},
-        );
-        editor.onSubmit = (text: string) => {
-          submittedQueuePrompts.push(text);
-          submittedQueueImages.push(editor.pendingImages.map((image) => image.data));
-          editor.clearDraft();
-        };
-      },
-      get theme() {
-        return { symbol: () => "img" };
-      },
-      getEditorText: () => editor.getText(),
+      getEditorText: () => draft,
       setEditorText(value: string) {
-        editor.setText(value);
-      },
-      pasteToEditor(value: string) {
-        editor.handleInput(`\u001b[200~${value}\u001b[201~`);
+        draft = value;
       },
       custom(factory: Function) {
         const { promise, resolve } = Promise.withResolvers<unknown>();
@@ -627,110 +606,62 @@ test("round-trips an OMP image plus a file-backed large paste and queues it with
   } as unknown as ExtensionContext;
   await refreshConfig?.({}, context);
 
-  const imageData = Buffer.from("native image bytes").toString("base64");
   const largePaste = "large paste line\n".repeat(70_000);
   const originalText = `attachment [Image #1]\n${largePaste}`;
-  editor.setText("attachment [Image #1]\n");
-  editor.pendingImages = [{ type: "image", data: imageData, mimeType: "image/png", detail: "original" }];
-  editor.pendingImageLinks = [undefined];
-  editor.insertPaste(largePaste);
+  const picture = imageAttachment(attachmentRoot, "native image bytes", "original");
+  writeRawEntry(sessionId, "[Large pasted prompt · 70001 lines · 1190018 chars]", [picture, bodyAttachment(attachmentRoot, originalText)]);
 
-  await stashShortcut.handler(context);
-
-  expect(editor.getText()).toBe("");
-  const stashFiles = readdirSync(join(agentDir, "prompt-stash")).filter((file) =>
-    file.endsWith(".json"),
-  );
-  const attachmentEntry = stashFiles
-    .map((file) =>
-      JSON.parse(readFileSync(join(agentDir, "prompt-stash", file), "utf8")) as {
-        attachments?: Array<{ kind: string; ref: string }>;
-        text: string;
-      },
-    )
-    .find((entry) => entry.attachments?.length === 2);
-  expect(attachmentEntry).toBeDefined();
-  expect(attachmentEntry!.attachments!.map((attachment) => attachment.kind).sort()).toEqual([
-    "body",
-    "image",
-  ]);
-  expect(attachmentEntry!.text).toStartWith("[Large pasted prompt");
-
-  let pasteMenuCalls = 0;
-  editor.onLargePaste = () => {
-    pasteMenuCalls += 1;
-    return true;
-  };
-
-  browserCalls = 0;
-  browserMode = "restore";
   await stashCommand.handler("", context);
 
-  expect(pasteMenuCalls).toBe(0);
-  expect(editor.getExpandedText()).toBe(originalText);
-  expect(editor.pendingImages).toHaveLength(1);
-  expect(editor.pendingImages[0]?.data).toBe(imageData);
-  expect(editor.pendingImages[0]?.detail).toBe("original");
-  const attachmentDir = join(agentDir, "prompt-stash", "attachments");
-  const assetsBefore = readdirSync(attachmentDir).sort();
-  // The seeded stash is dated later, so this isn't a repeat of this chat's newest stash.
-  await stashShortcut.handler(context);
-  expect(editor.getText()).toBe("");
-  expect(readdirSync(attachmentDir).sort()).toEqual(assetsBefore);
+  // The whole text comes back, and the image is named: OMP lets a plugin set the draft's text only.
+  expect(errors).toEqual([]);
+  expect(draft).toBe(`attachment [Image #1 unavailable]\n${largePaste}`);
+  expect(notifications.at(-1)).toContain(
+    "couldn't restore Image #1 (OMP doesn't let plugins attach images to the composer)",
+  );
+  draft = "";
 
-  submittedQueuePrompts.length = 0;
-  submittedQueueImages.length = 0;
+  sentMessages.length = 0;
   browserCalls = 0;
   browserMode = "queue";
   await stashCommand.handler("", context);
   expect(browserCalls).toBe(2);
-  expect(submittedQueuePrompts).toEqual([`/queue ${originalText.trim()}`]);
-  expect(submittedQueueImages).toEqual([[imageData]]);
-  expect(pasteMenuCalls).toBe(0);
-  expect(
-    readdirSync(join(agentDir, "prompt-stash")).filter((file) => file.endsWith(".json")),
-  ).toHaveLength(stashFiles.length + 1);
+  expect(sentMessages).toEqual([{
+    content: [
+      { type: "text", text: originalText },
+      { type: "image", data: Buffer.from("native image bytes").toString("base64"), mimeType: "image/png", detail: "original" },
+    ],
+    options: undefined,
+  }]);
+  expect(draft).toBe("");
 
   // Same-size garbage fails the content hash check. The display link shares the damaged bytes.
-  const imageRef = attachmentEntry!.attachments!.find((attachment) => attachment.kind === "image")!.ref;
-  const imagePath = join(attachmentDir, imageRef.slice("sha256:".length));
-  const imageBytes = readFileSync(imagePath);
-  writeFileSync(imagePath, Buffer.alloc(imageBytes.length, 0x21), { mode: 0o600 });
+  const imagePath = join(attachmentRoot, "attachments", picture.ref.slice("sha256:".length));
+  writeFileSync(imagePath, Buffer.alloc(picture.byteLength, 0x21), { mode: 0o600 });
+  sentMessages.length = 0;
+  browserCalls = 0;
+  await stashCommand.handler("", context);
+  // The queue stops at a draft instead of sending a prompt that lost its image.
+  expect(sentMessages).toEqual([]);
+  expect(draft).toBe(`/queue attachment [Image #1 unavailable]\n${largePaste}`);
+  expect(notifications.at(-1)).toContain("because Image #1 (damaged) couldn't be restored");
+  draft = "";
+
   browserCalls = 0;
   browserMode = "restore";
   await stashCommand.handler("", context);
-  // The text and the large paste still come back, and the damaged image is named.
   expect(errors).toEqual([]);
   expect(notifications.at(-1)).toContain("couldn't restore Image #1 (damaged)");
-  expect(editor.pendingImages).toEqual([]);
-  expect(editor.getExpandedText()).toBe(`attachment [Image #1 unavailable]\n${largePaste}`);
-  editor.clearDraft();
+  expect(draft).toBe(`attachment [Image #1 unavailable]\n${largePaste}`);
+  draft = "";
 
-  // Stashing the same image again replaces the damaged copy with the good bytes.
-  editor.setText("[Image #1] stashed again");
-  editor.pendingImages = [{ type: "image", data: imageData, mimeType: "image/png" }];
-  editor.pendingImageLinks = [undefined];
+  // A draft over 1 MiB is stored as a body attachment and leaves the composer.
+  draft = largePaste;
   await stashShortcut.handler(context);
   expect(errors).toEqual([]);
-  expect(editor.getText()).toBe("");
-  expect(readFileSync(imagePath)).toEqual(imageBytes);
-  expect(readFileSync(`${imagePath}.png`)).toEqual(imageBytes);
-
-  const imageMarkers = Array.from({ length: 64 }, (_, index) => `[Image #${index + 1}]`).join(" ");
-  const image = { type: "image" as const, data: imageData, mimeType: "image/png" };
-  editor.setText(imageMarkers);
-  editor.pendingImages = Array.from({ length: 64 }, () => image);
-  editor.pendingImageLinks = Array.from({ length: 64 }, () => undefined);
-  await stashShortcut.handler(context);
-  expect(editor.getText()).toBe("");
-
-  editor.setText(`${imageMarkers} [Image #65]`);
-  editor.pendingImages = Array.from({ length: 65 }, () => image);
-  editor.pendingImageLinks = Array.from({ length: 65 }, () => undefined);
-  await stashShortcut.handler(context);
-  expect(notifications.at(-1)).toContain("at most 64 attachments");
-  expect(editor.getText()).toContain("[Image #65]");
-  editor.clearDraft();
+  expect(draft).toBe("");
+  const saved = readEntries().find((entry) => entry.text.startsWith("[Large pasted prompt") && entry.attachments.length === 1);
+  expect(saved?.attachments[0]?.kind).toBe("body");
 });
 
 test("editing a file-backed attachment stash preserves image refs and lock state", async () => {
@@ -738,34 +669,19 @@ test("editing a file-backed attachment stash preserves image refs and lock state
   const previousEditor = process.env.EDITOR;
   delete process.env.VISUAL;
   delete process.env.EDITOR;
-  let draft!: CustomEditor;
-  const saveContext = {
-    cwd: agentDir,
-    mode: "tui",
-    agent: MAIN_AGENT,
-    sessionManager: { ...TEST_SESSION_MANAGER },
-    ui: {
-      setEditorComponent(factory: Function) {
-        draft = factory({}, { symbols: {}, borderColor: (text: string) => text }, {});
-      },
-      getEditorText: () => draft.getText(),
-      notify() {},
-    },
-  } as unknown as ExtensionContext;
-  await refreshConfig?.({}, saveContext);
-  draft.setText("attachment [Image #1]\n");
-  draft.pendingImages = [{ type: "image", data: Buffer.from("native image bytes").toString("base64"), mimeType: "image/png" }];
-  draft.pendingImageLinks = [undefined];
-  draft.insertPaste("large paste line\n".repeat(70_000));
-  await stashShortcut.handler(saveContext);
-  expect(draft.getText()).toBe("");
+  const attachmentRoot = join(agentDir, "prompt-stash");
+  const sessionId = randomUUID();
+  writeRawEntry(sessionId, "[Large pasted prompt · 70001 lines · 1190018 chars]", [
+    imageAttachment(attachmentRoot, "native image bytes"),
+    bodyAttachment(attachmentRoot, `attachment [Image #1]\n${"large paste line\n".repeat(70_000)}`),
+  ]);
   let browserCalls = 0;
   let originalPrefill = "";
   const context = {
     cwd: agentDir,
     mode: "tui",
     agent: MAIN_AGENT,
-    sessionManager: TEST_SESSION_MANAGER,
+    sessionManager: { ...TEST_SESSION_MANAGER, getSessionId: () => sessionId },
     ui: {
       custom(factory: Function) {
         const { promise, resolve } = Promise.withResolvers<unknown>();
@@ -986,12 +902,7 @@ test("never deletes another writer's replacement temp after an edit collision", 
       custom(factory: Function) {
         const { promise, resolve } = Promise.withResolvers<unknown>();
         const component = factory(
-          {
-            terminal: { rows: 60, write: () => {} },
-            requestRender() {},
-            stop() {},
-            start() {},
-          },
+          uiHost(60),
           TEST_THEME,
           undefined,
           resolve,
@@ -1047,12 +958,7 @@ test("preserves both results when concurrent editors start from one stash revisi
         custom(factory: Function) {
           const { promise, resolve } = Promise.withResolvers<unknown>();
           const component = factory(
-            {
-              terminal: { rows: 60, write: () => {} },
-              requestRender() {},
-              stop() {},
-              start() {},
-            },
+            uiHost(60),
             TEST_THEME,
             undefined,
             resolve,
@@ -1202,12 +1108,7 @@ test("preserves concurrent edits that begin from one recoverable temp", async ()
         custom(factory: Function) {
           const { promise, resolve } = Promise.withResolvers<unknown>();
           const component = factory(
-            {
-              terminal: { rows: 60, write: () => {} },
-              requestRender() {},
-              stop() {},
-              start() {},
-            },
+            uiHost(60),
             TEST_THEME,
             undefined,
             resolve,
@@ -1868,12 +1769,7 @@ test("keeps quota-preserved conflict copies visible in the browser", async () =>
       custom(factory: Function) {
         const { promise, resolve } = Promise.withResolvers<unknown>();
         const component = factory(
-          {
-            terminal: { rows: 60, write: () => {} },
-            requestRender() {},
-            stop() {},
-            start() {},
-          },
+          uiHost(60),
           TEST_THEME,
           undefined,
           resolve,
@@ -2042,7 +1938,7 @@ function optionPopupFixture(options: string[], rows = 12) {
     ui: {
       custom(factory: Function) {
         component = factory(
-          { terminal: { rows }, requestRender() {} },
+          uiHost(rows),
           TEST_THEME,
           undefined,
           resolve,
@@ -2062,7 +1958,7 @@ function optionPopupFixture(options: string[], rows = 12) {
 
 test("fits square popup frames to ANSI and wide-character cell widths", () => {
   for (const width of [1, 2, 5, 24]) {
-    const frame = createFrame(TEST_THEME as unknown as Theme, width);
+    const frame = createFrame(TEST_THEME as unknown as ExtensionTheme, width);
     const lines = [
       frame.top("漢字 popup title"),
       frame.row("\u001b[31m漢字 wide content that needs clipping\u001b[39m"),
@@ -2166,7 +2062,6 @@ test("honors Show icons while using contextual Nerd glyphs in the stash browser"
         return Promise.resolve(null);
       },
       getEditorText: () => "",
-      setEditorComponent() {},
       notify() {},
     },
   } as unknown as ExtensionContext;
@@ -2191,12 +2086,23 @@ test("honors Show icons while using contextual Nerd glyphs in the stash browser"
 });
 
 test("imports only the SDK modules compiled OMP serves to extensions", () => {
-  // Mirrors collectBundledPiEntries in pi-coding-agent's scripts/legacy-pi-virtual-module.ts:
-  // package roots, explicit subpath exports, and wildcard exports with a non-empty prefix.
+  // Mirrors collectBundledPiEntries in pi-coding-agent's scripts/legacy-pi-virtual-module.ts: package
+  // roots, explicit subpath exports, wildcard exports with a non-empty prefix, and the root `./*` export
+  // of the packages that list one (pi-tui at any depth, pi-utils at the top level).
+  const rootWildcard: Record<string, "flat" | "nested"> = {
+    "@oh-my-pi/pi-tui": "nested",
+    "@oh-my-pi/pi-utils": "flat",
+  };
   const root = join(import.meta.dir, "..");
   const unserved: string[] = [];
-  for (const file of readdirSync(join(root, "extensions")).filter((name) => name.endsWith(".ts"))) {
+  const removedRoot: string[] = [];
+  const files = [
+    ...readdirSync(join(root, "extensions")).filter((name) => name.endsWith(".ts") || name.endsWith(".bundle.js")),
+  ];
+  for (const file of files) {
     const source = readFileSync(join(root, "extensions", file), "utf8");
+    // pi-tui's package root no longer exports components or helpers: only types may come from it.
+    if (/^import (?!type )[^;]* from "@oh-my-pi\/pi-tui";/m.test(source)) removedRoot.push(file);
     const imports = source.matchAll(/^import (?!type )[^;]* from "(@oh-my-pi\/[^/"]+)\/([^"]+)";/gm);
     for (const [, name, subpath] of imports) {
       const { exports } = JSON.parse(readFileSync(join(root, "node_modules", name!, "package.json"), "utf8"));
@@ -2204,12 +2110,17 @@ test("imports only the SDK modules compiled OMP serves to extensions", () => {
       const served = Object.keys(exports).some((key) => {
         const star = key.indexOf("*");
         if (star === -1) return key === target;
-        return star > 2 && target.startsWith(key.slice(0, star)) && target.endsWith(key.slice(star + 1));
+        if (star <= 2) {
+          const kind = rootWildcard[name!];
+          return kind !== undefined && target.endsWith(key.slice(star + 1)) && (kind === "nested" || !subpath!.includes("/"));
+        }
+        return target.startsWith(key.slice(0, star)) && target.endsWith(key.slice(star + 1));
       });
       if (!served) unserved.push(`${file}: ${name}/${subpath}`);
     }
   }
   expect(unserved).toEqual([]);
+  expect(removedRoot).toEqual([]);
 });
 
 test("cuts origin names at the limit without splitting a surrogate pair", async () => {
@@ -2223,29 +2134,29 @@ test("cuts origin names at the limit without splitting a surrogate pair", async 
 
 test("skips an identical save inside 500 ms but saves different text", async () => {
   const sessionId = randomUUID();
-  let editor!: CustomEditor;
+  let draft = "";
   const context = {
     cwd: agentDir, mode: "tui", agent: MAIN_AGENT,
     sessionManager: { ...TEST_SESSION_MANAGER, getSessionId: () => sessionId },
     ui: {
-      setEditorComponent(factory: Function) {
-        editor = factory({}, { symbols: {}, borderColor: (text: string) => text }, {});
+      getEditorText: () => draft,
+      setEditorText(value: string) {
+        draft = value;
       },
-      getEditorText: () => editor.getText(),
       notify() {},
     },
   } as unknown as ExtensionContext;
-  const saved = () => readEntries().filter((entry) => (entry as any).origin?.sessionId === sessionId);
+  const saved = () => readEntries().filter((entry) => entry.origin?.sessionId === sessionId);
   await refreshConfig?.({}, context);
-  editor.setDraft("double trigger", []);
+  draft = "double trigger";
   await stashShortcut.handler(context);
   expect(saved()).toHaveLength(1);
   // The same bytes arrive again before the first trigger's result is visible.
-  editor.setDraft("double trigger", []);
+  draft = "double trigger";
   await stashShortcut.handler(context);
   expect(saved()).toHaveLength(1);
-  expect(editor.getText()).toBe("");
-  editor.setDraft("different text", []);
+  expect(draft).toBe("");
+  draft = "different text";
   await stashShortcut.handler(context);
   expect(saved().map((entry) => entry.text).sort()).toEqual(["different text", "double trigger"]);
 });
@@ -2257,7 +2168,6 @@ test("session_switch reloads settings from the new cwd", async () => {
   const context = (cwd: string) => ({
     cwd, mode: "tui", agent: MAIN_AGENT, sessionManager: TEST_SESSION_MANAGER,
     ui: {
-      setEditorComponent() {},
       getEditorText: () => editor,
       setEditorText(value: string) { editor = value; },
       notify(message: string) { notifications.push(message); },

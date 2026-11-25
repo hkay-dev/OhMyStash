@@ -79,7 +79,7 @@ async function useSettings(settings: Record<string, unknown>): Promise<void> {
   );
   // session_start reloads the settings only for the main TUI session.
   await refreshConfig({}, {
-    cwd: agentDir, mode: "tui", agent: { kind: "main" }, ui: { setEditorComponent() {} },
+    cwd: agentDir, mode: "tui", agent: { kind: "main" }, ui: {},
   } as unknown as ExtensionContext);
 }
 
@@ -100,7 +100,7 @@ async function browse(
       custom(factory: BrowserFactory) {
         const { promise, resolve } = Promise.withResolvers<unknown>();
         const component = factory(
-          { terminal: { rows: 60 }, requestRender() {}, stop() {}, start() {} },
+          { size: () => ({ columns: 120, rows: 60 }), requestRender() {}, suspend: <R>(run: () => Promise<R>) => run() },
           TEST_THEME,
           undefined,
           resolve,

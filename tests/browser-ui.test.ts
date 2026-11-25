@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import type * as Tui from "@oh-my-pi/pi-tui";
+import type * as Width from "@oh-my-pi/pi-tui/text/width";
 
 type BrowserComponent = { handleInput(data: string): void; render(width: number): string[] };
 type BrowserFactory = (
@@ -19,7 +19,7 @@ const previousConfigDir = process.env.PI_CONFIG_DIR;
 const agentDir = mkdtempSync(join(tmpdir(), "oms-browser-ui-test-"));
 const stashDir = join(agentDir, "prompt-stash");
 const TEST_THEME = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
-let visibleWidth: typeof Tui.visibleWidth;
+let visibleWidth: typeof Width.visibleWidth;
 let refreshDirsFromEnv: () => void;
 let stashCommand: { handler: (args: string, ctx: ExtensionContext) => Promise<void> | void };
 let refreshConfig: (event: unknown, ctx: ExtensionContext) => Promise<void>;
@@ -48,7 +48,7 @@ async function useLayout(layout: string): Promise<void> {
   );
   // session_start reloads the settings only for the main TUI session.
   await refreshConfig({}, {
-    cwd: agentDir, mode: "tui", agent: { kind: "main" }, ui: { setEditorComponent() {} },
+    cwd: agentDir, mode: "tui", agent: { kind: "main" }, ui: {},
   } as unknown as ExtensionContext);
 }
 
@@ -77,7 +77,8 @@ async function openBrowser(sessionId: string): Promise<BrowserFactory> {
 }
 
 function browser(factory: BrowserFactory, rows: number): BrowserComponent {
-  return factory({ terminal: { rows }, requestRender() {} }, TEST_THEME, undefined, () => {});
+  const ui = { size: () => ({ columns: 120, rows }), requestRender() {}, suspend: <R>(run: () => Promise<R>) => run() };
+  return factory(ui, TEST_THEME, undefined, () => {});
 }
 
 beforeAll(async () => {
@@ -89,7 +90,7 @@ beforeAll(async () => {
   process.env.PI_CONFIG_DIR = relative(homedir(), agentDir);
   ({ refreshDirsFromEnv } = await import("@oh-my-pi/pi-utils"));
   refreshDirsFromEnv();
-  ({ visibleWidth } = await import("@oh-my-pi/pi-tui"));
+  ({ visibleWidth } = await import("@oh-my-pi/pi-tui/text/width"));
   mkdirSync(stashDir, { mode: 0o700 });
   const { default: promptStash } = await import("../extensions/prompt-stash.ts");
   await promptStash({

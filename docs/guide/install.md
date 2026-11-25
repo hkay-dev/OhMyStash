@@ -13,7 +13,7 @@ OhMyStash installs straight from GitHub with OMP's plugin manager. There's no se
 
 ## What you need
 
-- OMP 18.14.0 or newer.
+- OMP 19.2.1 or newer.
 - Bun on your PATH. OMP's plugin manager installs packages with Bun.
 
 On macOS, install Bun with Homebrew:
@@ -64,15 +64,5 @@ omp plugin doctor @hkay-dev/ohmystash
 ```
 
 `@hkay-dev/ohmystash` is the plugin's ID in OMP. It's also the name its settings and diagnostics use. See [Settings](settings.md).
-
-## If OMP says to restart
-
-OMS attaches to OMP's native editor so it can read images and large pastes in your composer. If OMP started before the plugin was fully attached, stashing or restoring a prompt with those can show this message:
-
-```
-Restart OMP once so OhMyStash can attach to the native editor
-```
-
-Close OMP and open it again. You only need to do it once after an install or update. Other restart messages are listed in [Messages and fixes](troubleshooting.md).
 
 Next, [stash your first prompt](stash-and-restore.md).

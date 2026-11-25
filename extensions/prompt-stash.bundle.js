@@ -21,34 +21,18 @@ import {
   writeFileSync
 } from "fs";
 import { basename, dirname as dirname2, join as join2, resolve as resolve2 } from "path";
-import { pathToFileURL } from "url";
 import { getAgentDir } from "@oh-my-pi/pi-utils";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
-import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { getEditorCommand, openInEditor } from "@oh-my-pi/pi-coding-agent/utils/external-editor";
-import {
-  extractPrintableText as extractPrintableText2,
-  fuzzyFilter as fuzzyFilter2,
-  Input as Input2,
-  Key as Key2,
-  matchesKey as matchesKey2,
-  replaceTabs,
-  truncateToWidth as truncateToWidth2,
-  visibleWidth as visibleWidth2
-} from "@oh-my-pi/pi-tui";
-import { SYMBOL_PRESETS as SYMBOL_PRESETS2 } from "@oh-my-pi/pi-tui/theme/symbols";
+import { fuzzyFilter as fuzzyFilter2 } from "@oh-my-pi/pi-coding-agent/utils/fuzzy";
+import { replaceTabs, truncate as truncate2, visibleWidth as visibleWidth2 } from "@oh-my-pi/pi-tui/text/width";
+import { presetSymbols as presetSymbols2 } from "@oh-my-pi/pi-tui/theme/symbols";
 
 // extensions/ui.ts
-import {
-  extractPrintableText,
-  fuzzyFilter,
-  Input,
-  Key,
-  matchesKey,
-  truncateToWidth,
-  visibleWidth
-} from "@oh-my-pi/pi-tui";
-import { SYMBOL_PRESETS } from "@oh-my-pi/pi-tui/theme/symbols";
+import { fuzzyFilter } from "@oh-my-pi/pi-coding-agent/utils/fuzzy";
+import { decodeKey } from "@oh-my-pi/pi-tui/driver/input/keys";
+import { presetSymbols } from "@oh-my-pi/pi-tui/theme/symbols";
+import { truncate, visibleWidth } from "@oh-my-pi/pi-tui/text/width";
 
 // extensions/native-ui.ts
 var NATIVE_UI_CHANNEL = "ohmystash:native-ui";
@@ -85,19 +69,160 @@ async function pickNativeOption(host, spec) {
 
 // extensions/ui.ts
 var OVERLAY_OPTIONS = { overlay: true };
+var nerd = presetSymbols("nerd");
 function extensionIcon(key) {
-  const glyph = SYMBOL_PRESETS.nerd[key];
-  return typeof glyph === "string" ? glyph : "";
+  return nerd[key] ?? "";
 }
 function fitToWidth(text, width) {
-  const clipped = truncateToWidth(text, Math.max(0, width));
+  const clipped = truncate(text, Math.max(0, width));
   return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
+}
+function readKey(data) {
+  return decodeKey(data, { kitty: false, backspaceIsCtrl: false }) ?? undefined;
+}
+var MODIFIER_ORDER = ["ctrl", "alt", "shift", "super"];
+function canonicalKeyId(id) {
+  const parts = id.trim().toLowerCase().split("+");
+  const modifiers = MODIFIER_ORDER.filter((modifier) => parts.includes(modifier));
+  const base = parts.filter((part) => !MODIFIER_ORDER.includes(part)).join("+");
+  return [...modifiers, base].join("+");
+}
+function keyMatches(key, id) {
+  return key !== undefined && canonicalKeyId(key.id) === canonicalKeyId(id);
+}
+var oneLine = (text) => text.replace(/\r\n|\r|\n|\t/g, " ").replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+var graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+class TextField {
+  prompt = "";
+  focused = false;
+  #value = "";
+  #cursor = 0;
+  getValue() {
+    return this.#value;
+  }
+  setValue(value) {
+    this.#value = oneLine(value);
+    this.#cursor = this.#value.length;
+  }
+  #stops() {
+    return [...Array.from(graphemes.segment(this.#value), (part) => part.index), this.#value.length];
+  }
+  #before() {
+    return this.#stops().findLast((stop) => stop < this.#cursor) ?? 0;
+  }
+  #after() {
+    return this.#stops().find((stop) => stop > this.#cursor) ?? this.#value.length;
+  }
+  #wordBefore() {
+    let at = this.#cursor;
+    while (at > 0 && this.#value[at - 1] === " ")
+      at -= 1;
+    while (at > 0 && this.#value[at - 1] !== " ")
+      at -= 1;
+    return at;
+  }
+  #wordAfter() {
+    let at = this.#cursor;
+    while (at < this.#value.length && this.#value[at] === " ")
+      at += 1;
+    while (at < this.#value.length && this.#value[at] !== " ")
+      at += 1;
+    return at;
+  }
+  #replace(from, to, text) {
+    this.#value = this.#value.slice(0, from) + text + this.#value.slice(to);
+    this.#cursor = from + text.length;
+  }
+  handleInput(data) {
+    const paste = /^\u001b\[200~([\s\S]*)\u001b\[201~$/.exec(data);
+    if (paste) {
+      this.#replace(this.#cursor, this.#cursor, oneLine(paste[1] ?? ""));
+      return;
+    }
+    const key = readKey(data);
+    if (!key) {
+      if (!/[\u0000-\u001f\u007f-\u009f]/.test(data))
+        this.#replace(this.#cursor, this.#cursor, oneLine(data));
+      return;
+    }
+    if (key.text !== undefined) {
+      this.#replace(this.#cursor, this.#cursor, oneLine(key.text));
+      return;
+    }
+    switch (key.id) {
+      case "left":
+      case "ctrl+b":
+        this.#cursor = this.#before();
+        break;
+      case "right":
+      case "ctrl+f":
+        this.#cursor = this.#after();
+        break;
+      case "ctrl+left":
+      case "alt+left":
+      case "alt+b":
+        this.#cursor = this.#wordBefore();
+        break;
+      case "ctrl+right":
+      case "alt+right":
+      case "alt+f":
+        this.#cursor = this.#wordAfter();
+        break;
+      case "home":
+      case "ctrl+a":
+        this.#cursor = 0;
+        break;
+      case "end":
+      case "ctrl+e":
+        this.#cursor = this.#value.length;
+        break;
+      case "backspace":
+        this.#replace(this.#before(), this.#cursor, "");
+        break;
+      case "delete":
+        this.#replace(this.#cursor, this.#after(), "");
+        break;
+      case "ctrl+w":
+      case "alt+backspace":
+      case "ctrl+backspace":
+        this.#replace(this.#wordBefore(), this.#cursor, "");
+        break;
+      case "alt+d":
+        this.#replace(this.#cursor, this.#wordAfter(), "");
+        break;
+      case "ctrl+u":
+        this.#replace(0, this.#cursor, "");
+        break;
+      case "ctrl+k":
+        this.#replace(this.#cursor, this.#value.length, "");
+        break;
+    }
+  }
+  render(width) {
+    const room = Math.max(1, Math.floor(width) - visibleWidth(this.prompt));
+    if (!this.focused)
+      return [`${this.prompt}${truncate(this.#value, room, "")}`];
+    const after = this.#after();
+    const caret = this.#cursor < this.#value.length ? this.#value.slice(this.#cursor, after) : " ";
+    const caretWidth = Math.max(1, visibleWidth(caret));
+    const rest = this.#value.slice(after);
+    const beforeRoom = Math.max(0, room - caretWidth - Math.min(visibleWidth(rest), Math.floor(room / 3)));
+    let before = "";
+    for (const part of Array.from(graphemes.segment(this.#value.slice(0, this.#cursor))).reverse()) {
+      if (visibleWidth(part.segment + before) > beforeRoom)
+        break;
+      before = part.segment + before;
+    }
+    const tail = truncate(rest, Math.max(0, room - caretWidth - visibleWidth(before)), "");
+    return [`${this.prompt}${before}\x1B[7m${caret}\x1B[27m${tail}`];
+  }
 }
 function createFrame(theme, width) {
   const renderWidth = Math.max(1, Math.floor(width));
   const contentWidth = Math.max(0, renderWidth - 2);
   const border = (text) => theme.fg("accent", text);
-  const heading = (label) => theme.fg("accent", theme.bold(truncateToWidth(` ${label} `, contentWidth, "")));
+  const heading = (label) => theme.fg("accent", theme.bold(truncate(` ${label} `, contentWidth, "")));
   const line = (left, content, right) => renderWidth === 1 ? border(left) : `${border(left)}${content}${border(right)}`;
   return {
     top(title) {
@@ -117,7 +242,6 @@ function createFrame(theme, width) {
     }
   };
 }
-var nerd = SYMBOL_PRESETS.nerd;
 var MAC_MODIFIER_LABELS = {
   ctrl: [nerd["key.ctrlMac"], "Ctrl"],
   alt: [nerd["key.altMac"], "Alt"],
@@ -152,10 +276,10 @@ var KEY_LABELS = {
 function isPromiseLike(value) {
   return typeof value?.then === "function";
 }
-function listComponent(tui, theme, options, done, layout, initialPageSize, terminalCursor) {
+function listComponent(ui, theme, options, done, layout, initialPageSize) {
   let drawnPageSize = typeof initialPageSize === "number" ? initialPageSize : 1;
   const pageSize = () => typeof initialPageSize === "function" ? initialPageSize() : drawnPageSize;
-  const input = new Input;
+  const input = new TextField;
   input.prompt = "";
   input.focused = true;
   const source = options.items;
@@ -202,7 +326,7 @@ function listComponent(tui, theme, options, done, layout, initialPageSize, termi
     }
     const selected = matches[index];
     anchorOn(selected, index < matches.length);
-    return { theme, input, rows: Math.max(1, tui.terminal.rows), query, matches, total: items.length, selected, index };
+    return { theme, input, rows: Math.max(1, ui.size().rows), query, matches, total: items.length, selected, index };
   };
   const settle = (result) => {
     if (isPromiseLike(result)) {
@@ -212,43 +336,35 @@ function listComponent(tui, theme, options, done, layout, initialPageSize, termi
         settle(value);
       }, () => {
         pending = false;
-        tui.requestRender();
+        ui.requestRender();
       });
     } else if (result === undefined) {
-      tui.requestRender();
+      ui.requestRender();
     } else {
       done(result);
     }
   };
-  const component = {
-    get focused() {
-      return input.focused;
-    },
-    set focused(value) {
-      input.focused = value;
-    },
-    invalidate() {
-      input.invalidate();
-    },
+  return {
     select(item) {
       anchorOn(item, true);
       index = 0;
-      tui.requestRender();
+      ui.requestRender();
     },
     handleInput(data) {
-      const typed = input.focused && extractPrintableText(data) !== undefined;
-      if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || !typed && toggleKey !== undefined && matchesKey(data, toggleKey)) {
+      const key = readKey(data);
+      const typed = input.focused && key?.text !== undefined;
+      if (keyMatches(key, "escape") || keyMatches(key, "ctrl+c") || !typed && toggleKey !== undefined && keyMatches(key, toggleKey)) {
         done(undefined);
         return;
       }
-      const action = typed ? undefined : options.actions?.find((candidate) => matchesKey(data, candidate.key));
+      const action = typed ? undefined : options.actions?.find((candidate) => keyMatches(key, candidate.key));
       const list = view();
       if (action) {
         if (!pending)
           settle(action.run(list.selected));
         return;
       }
-      const target = matchesKey(data, Key.up) ? list.index - 1 : matchesKey(data, Key.down) ? list.index + 1 : matchesKey(data, Key.home) ? 0 : matchesKey(data, Key.end) ? list.matches.length - 1 : matchesKey(data, Key.pageUp) ? list.index - pageSize() : matchesKey(data, Key.pageDown) ? list.index + pageSize() : undefined;
+      const target = keyMatches(key, "up") ? list.index - 1 : keyMatches(key, "down") ? list.index + 1 : keyMatches(key, "home") ? 0 : keyMatches(key, "end") ? list.matches.length - 1 : keyMatches(key, "pageUp") ? list.index - pageSize() : keyMatches(key, "pageDown") ? list.index + pageSize() : undefined;
       if (target === undefined) {
         const before = input.getValue();
         input.handleInput(data);
@@ -260,7 +376,7 @@ function listComponent(tui, theme, options, done, layout, initialPageSize, termi
         index = Math.max(0, Math.min(list.matches.length - 1, target));
         anchorOn(list.matches[index], index < list.matches.length);
       }
-      tui.requestRender();
+      ui.requestRender();
     },
     render(width) {
       const drawn = layout(view(), width);
@@ -268,9 +384,6 @@ function listComponent(tui, theme, options, done, layout, initialPageSize, termi
       return drawn.lines;
     }
   };
-  if (terminalCursor)
-    component.setUseTerminalCursor = (value) => input.setUseTerminalCursor(value);
-  return component;
 }
 function drawOptions(title, list, width, icons) {
   const { theme, input: searchInput, matches: filtered, index: selected } = list;
@@ -283,8 +396,8 @@ function drawOptions(title, list, width, icons) {
   const emptyLabel = list.total === 0 ? "No options available" : "No matching options";
   if (terminalRows < 3 || renderWidth < 4) {
     const lines = [
-      theme.fg("accent", theme.bold(truncateToWidth(option ?? emptyLabel, renderWidth, ""))),
-      truncateToWidth(searchInput.getValue() ? `/${searchInput.getValue()}` : hints, renderWidth, "")
+      theme.fg("accent", theme.bold(truncate(option ?? emptyLabel, renderWidth, ""))),
+      truncate(searchInput.getValue() ? `/${searchInput.getValue()}` : hints, renderWidth, "")
     ].slice(0, terminalRows);
     return { lines, pageSize: 1 };
   }
@@ -338,7 +451,7 @@ function selectOption(ctx, title, options, iconKey, settings) {
   }).catch(terminal);
 }
 function selectOptionInTerminal(ctx, title, options, iconKey, settings) {
-  return ctx.ui.custom((tui, theme, _keybindings, done) => {
+  return ctx.ui.custom((ui, theme, _keybindings, done) => {
     const icons = settings?.icons ?? true;
     const glyph = icons && iconKey ? extensionIcon(iconKey) : "";
     const popupTitle = glyph ? `${glyph} ${title}` : title;
@@ -350,8 +463,8 @@ function selectOptionInTerminal(ctx, title, options, iconKey, settings) {
       actions: [{ key: "enter", label: "Select", run: (option) => option }],
       ...settings?.selected === undefined ? {} : { selected: settings.selected }
     };
-    const pageSize = () => Math.max(1, Math.min(12, tui.terminal.rows - 5));
-    return listComponent(tui, theme, list, done, (view, width) => drawOptions(popupTitle, view, width, icons), pageSize, false);
+    const pageSize = () => Math.max(1, Math.min(12, ui.size().rows - 5));
+    return listComponent(ui, theme, list, done, (view, width) => drawOptions(popupTitle, view, width, icons), pageSize);
   }, OVERLAY_OPTIONS);
 }
 
@@ -812,7 +925,7 @@ var DEFAULT_CONFIG = {
 };
 var pluginConfig = { ...DEFAULT_CONFIG };
 var pluginEvents;
-var ACTIVE_EDITORS = new WeakMap;
+var pluginApi;
 
 class EntryConflictError extends Error {
 }
@@ -1128,21 +1241,6 @@ function persistAsset(data, extension) {
     }
     throw error;
   }
-}
-function attachmentDisplayPath(attachment) {
-  const canonical = assetPath(attachment.ref);
-  const extension = blobExtensionForImageMimeType(attachment.mimeType);
-  if (!extension)
-    return canonical;
-  const displayPath = `${canonical}.${extension}`;
-  try {
-    const canonicalStat = lstatSync2(canonical);
-    const displayStat = lstatSync2(displayPath);
-    if (!displayStat.isSymbolicLink() && displayStat.isFile() && displayStat.dev === canonicalStat.dev && displayStat.ino === canonicalStat.ino) {
-      return displayPath;
-    }
-  } catch {}
-  return canonical;
 }
 function newestCandidateNames(dir) {
   const jsonNames = [];
@@ -2142,135 +2240,47 @@ function parseEditorDraft(text) {
     return { inputMode: "queue", text: text.slice(7) };
   return { inputMode: "normal", text };
 }
-function activeEditor(ctx) {
-  const editor = ACTIVE_EDITORS.get(ctx.sessionManager);
-  return editor?.tui && editor.tui.getFocused() !== editor ? undefined : editor;
-}
 function hasEditorContent(ctx) {
   return parseEditorDraft(ctx.ui.getEditorText()).text.length > 0;
 }
-function installEditorBridge(ctx) {
-  if (ctx.mode !== "tui")
-    return;
-  const sessionManager = ctx.sessionManager;
-  ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-    const focused = tui.getFocused?.();
-    const editor = focused instanceof CustomEditor ? focused : new CustomEditor(tui, theme, keybindings);
-    if (editor === focused)
-      editor.tui ??= tui;
-    ACTIVE_EDITORS.set(sessionManager, editor);
-    return editor;
-  });
-}
 var VISION_MARKER = /\[(Image|Video) #([1-9]\d*)((?:,[^\]\n]*)?)\](?: attachment:\/\/(\2))?/g;
-var ATTACHMENT_TOKEN = new RegExp(`\\[(?:Image|Video) #[1-9]\\d*(?:,[^\\]\\n]*)?\\]|(?:${Object.values(SYMBOL_PRESETS2).flatMap((preset) => [preset["chip.image"], preset["chip.video"], preset["chip.paste"]]).map((icon) => icon.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")}) #[1-9]\\d*`);
-var IMAGE_EXTENSION_BY_MIME = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/jpg": "jpg",
-  "image/gif": "gif",
-  "image/webp": "webp",
-  "image/svg+xml": "svg"
-};
-function normalizeBlobExtension(extension) {
-  if (!extension)
-    return;
-  const normalized = extension.startsWith(".") ? extension.slice(1) : extension;
-  if (normalized.length === 0 || normalized.length > 32)
-    return;
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(normalized))
-    return;
-  return normalized.toLowerCase();
-}
-function blobExtensionForImageMimeType(mimeType) {
-  if (!mimeType)
-    return;
-  const lower = mimeType.toLowerCase();
-  const known = IMAGE_EXTENSION_BY_MIME[lower];
-  if (known)
-    return known;
-  if (!lower.startsWith("image/"))
-    return;
-  const subtype = lower.slice("image/".length).split(";")[0]?.split("+")[0];
-  return normalizeBlobExtension(subtype);
-}
+var ATTACHMENT_TOKEN = new RegExp(`\\[(?:Image|Video) #[1-9]\\d*(?:,[^\\]\\n]*)?\\]|(?:${["unicode", "nerd", "ascii"].flatMap((name) => {
+  const preset = presetSymbols2(name);
+  return [preset["chip.image"], preset["chip.video"], preset["chip.paste"]];
+}).flatMap((icon) => icon === undefined ? [] : [icon.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")]).join("|")}) #[1-9]\\d*`);
 function readComposerDraft(ctx) {
-  const editor = activeEditor(ctx);
-  if (!editor) {
-    const draft = parseEditorDraft(ctx.ui.getEditorText());
-    if (ATTACHMENT_TOKEN.test(draft.text) || COLLAPSED_PASTE_TOKEN.test(draft.text)) {
-      throw new Error("Restart OMP once so OhMyStash can attach to the native editor");
-    }
-    return { draft, images: [] };
+  const draft = parseEditorDraft(ctx.ui.getEditorText());
+  if (ATTACHMENT_TOKEN.test(draft.text) || COLLAPSED_PASTE_TOKEN.test(draft.text)) {
+    throw new Error("The draft holds a pasted block or attachment, which OMP doesn't let OhMyStash read. Remove it or send it, then stash again");
   }
-  const expanded = editor.getExpandedText();
-  const keep = [...new Set(Array.from(expanded.matchAll(VISION_MARKER), (match) => Number(match[2])))].filter((n) => n <= editor.pendingImages.length).sort((a, b) => a - b);
-  const draft = parseEditorDraft(expanded.replace(VISION_MARKER, (marker, kind, n, tail, ref) => {
-    const index = keep.indexOf(Number(n)) + 1;
-    if (index === 0)
-      return marker;
-    return `[${kind} #${index}${tail}]${ref === undefined ? "" : ` attachment://${index}`}`;
-  }));
-  const images = editor.pendingImages.filter((_, index) => keep.includes(index + 1));
-  if (images.length > MAX_ATTACHMENTS) {
-    throw new Error(`An OMS entry can contain at most ${MAX_ATTACHMENTS} attachments`);
-  }
-  return { draft, images };
+  return draft;
 }
-function persistDraftAttachments({ draft: expandedDraft, images }) {
-  let attachmentBytes = 0;
-  const attachments = [];
-  const stored = new Map;
-  for (const image of images) {
-    const data = Buffer.from(image.data, "base64");
-    attachmentBytes += data.byteLength;
-    if (attachmentBytes > MAX_ENTRY_ATTACHMENT_BYTES) {
-      throw new Error("OMS attachments exceed the 128 MiB per-entry limit");
-    }
-    const extension = blobExtensionForImageMimeType(image.mimeType);
-    const key = `${extension ?? ""}:${image.data}`;
-    let ref = stored.get(key);
-    if (ref === undefined) {
-      ref = persistAsset(data, extension);
-      stored.set(key, ref);
-    }
-    attachments.push({
-      kind: "image",
-      ref,
-      byteLength: data.byteLength,
-      mimeType: image.mimeType,
-      ...image.detail === undefined ? {} : { detail: image.detail }
-    });
-  }
-  const textBytes = Buffer.byteLength(expandedDraft.text, "utf8");
+function persistDraftAttachments(draft) {
+  const textBytes = Buffer.byteLength(draft.text, "utf8");
   if (textBytes <= MAX_PROMPT_BYTES) {
-    return { ...expandedDraft, attachments };
+    return { ...draft, attachments: [] };
   }
-  attachmentBytes += textBytes;
-  if (textBytes > MAX_ATTACHMENT_BYTES || attachmentBytes > MAX_ENTRY_ATTACHMENT_BYTES) {
+  if (textBytes > MAX_ATTACHMENT_BYTES) {
     throw new Error("Large pasted prompt exceeds the 64 MiB text attachment limit");
   }
-  if (attachments.length >= MAX_ATTACHMENTS) {
-    throw new Error(`An OMS entry can contain at most ${MAX_ATTACHMENTS} attachments`);
-  }
-  const ref = persistAsset(Buffer.from(expandedDraft.text, "utf8"), "txt");
-  attachments.push({
-    kind: "body",
-    ref,
-    byteLength: textBytes,
-    charCount: expandedDraft.text.length,
-    lineCount: promptLineCount(expandedDraft.text)
-  });
+  const ref = persistAsset(Buffer.from(draft.text, "utf8"), "txt");
   return {
-    inputMode: expandedDraft.inputMode,
-    text: `[Large pasted prompt \xB7 ${promptLineCount(expandedDraft.text)} lines \xB7 ${expandedDraft.text.length} chars]`,
-    attachments
+    inputMode: draft.inputMode,
+    text: `[Large pasted prompt \xB7 ${promptLineCount(draft.text)} lines \xB7 ${draft.text.length} chars]`,
+    attachments: [
+      {
+        kind: "body",
+        ref,
+        byteLength: textBytes,
+        charCount: draft.text.length,
+        lineCount: promptLineCount(draft.text)
+      }
+    ]
   };
 }
 function resolveStoredAttachments(entry) {
   let body;
   const images = [];
-  const imageLinks = [];
   const imageNumbers = [];
   const failures = [];
   let imageCount = 0;
@@ -2294,7 +2304,6 @@ function resolveStoredAttachments(entry) {
         mimeType: attachment.mimeType,
         ...attachment.detail === undefined ? {} : { detail: attachment.detail }
       });
-      imageLinks.push(pathToFileURL(attachmentDisplayPath(attachment)).href);
       imageNumbers.push(imageCount);
     } else {
       if (body !== undefined)
@@ -2302,7 +2311,7 @@ function resolveStoredAttachments(entry) {
       body = data.toString("utf8");
     }
   }
-  return { body, images, imageLinks, imageNumbers, imageCount, failures };
+  return { body, images, imageNumbers, imageCount, failures };
 }
 function renumberImageMarkers(text, imageNumbers, imageCount) {
   if (imageNumbers.length === imageCount)
@@ -2323,77 +2332,66 @@ function describeFailures(failures) {
     byReason.set(reason, [...byReason.get(reason) ?? [], label]);
   return [...byReason].map(([reason, labels]) => `${labels.join(", ")} (${reason})`).join("; ");
 }
+var IMAGES_NOT_ATTACHED = "OMP doesn't let plugins attach images to the composer";
 function restoreIntoComposer(ctx, entry, options = {}) {
   lastSave = undefined;
   const prefix = options.forceQueue || entry.inputMode === "queue" ? "/queue " : "";
-  const editor = activeEditor(ctx);
-  if (!editor) {
-    if (entry.attachments.length > 0) {
-      throw new Error("Restart OMP once so OhMyStash can restore native attachments");
-    }
+  const resolved = entry.attachments.length === 0 ? undefined : inStore(false, () => resolveStoredAttachments(entry));
+  if (!resolved) {
     ctx.ui.setEditorText(`${prefix}${entry.text}`);
     return [];
   }
-  const resolved = entry.attachments.length === 0 ? undefined : inStore(false, () => resolveStoredAttachments(entry));
-  const images = resolved?.images ?? [];
-  const text = resolved ? renumberImageMarkers(resolved.body ?? entry.text, resolved.imageNumbers, resolved.imageCount) : entry.text;
-  const links = options.links === false ? undefined : resolved?.imageLinks ?? [];
-  if (text.length > 1000 || text.includes(`
-`)) {
-    editor.setDraft(prefix, images);
-    if (links) {
-      editor.pendingImageLinks = links;
-      editor.imageLinks = links;
-    }
-    editor.insertPaste(text);
-  } else {
-    editor.setDraft(`${prefix}${text}`, images);
-    if (links) {
-      editor.pendingImageLinks = links;
-      editor.imageLinks = links;
-    }
-  }
-  editor.tui?.requestRender();
-  return resolved?.failures ?? [];
+  ctx.ui.setEditorText(`${prefix}${renumberImageMarkers(resolved.body ?? entry.text, [], resolved.imageCount)}`);
+  return [
+    ...resolved.failures,
+    ...resolved.imageNumbers.map((number) => ({ label: `Image #${number}`, reason: IMAGES_NOT_ATTACHED }))
+  ];
 }
 function submitQueuedEntry(ctx, entry) {
-  const editor = activeEditor(ctx);
-  if (!editor) {
-    throw new Error("Restart OMP once so OhMyStash can submit queued stashes");
-  }
   if (hasEditorContent(ctx)) {
     ctx.ui.notify("Stash or clear the current editor before submitting a queued stash", "warning");
     return "blocked";
   }
-  const failures = restoreIntoComposer(ctx, entry, { forceQueue: true });
-  markEntryUsed(entry);
-  if (failures.length > 0) {
-    ctx.ui.notify(`Inserted the queued draft without submitting it, because it's missing ${describeFailures(failures)}. The stash file is unchanged`, "warning");
+  const resolved = entry.attachments.length === 0 ? undefined : inStore(false, () => resolveStoredAttachments(entry));
+  if (resolved && resolved.failures.length > 0) {
+    const failures = restoreIntoComposer(ctx, entry, { forceQueue: true });
+    markEntryUsed(entry);
+    ctx.ui.notify(`Inserted the queued draft without submitting it, because ${describeFailures(failures)} couldn't be restored. The stash file is unchanged`, "warning");
     return "drafted";
   }
-  editor.submit();
+  if (!pluginApi)
+    throw new Error("OhMyStash can't submit queued stashes before the session starts");
+  lastSave = undefined;
+  markEntryUsed(entry);
+  const text = resolved?.body ?? entry.text;
+  const images = resolved?.images ?? [];
+  pluginApi.sendUserMessage(images.length > 0 ? [{ type: "text", text }, ...images] : text, ctx.isIdle() ? undefined : { deliverAs: "followUp" }).catch((error) => {
+    const raw = error instanceof Error ? error.message : String(error);
+    ctx.ui.notify(`OMS failed: ${truncate2(displayText(raw).replaceAll(`
+`, " "), 320)}`, "error");
+  });
   return "submitted";
 }
 function editableEntryText(entry) {
   const body = entry.attachments.find((attachment) => attachment.kind === "body");
   return body ? inStore(false, () => readAsset(body.ref, body.byteLength).toString("utf8")) : entry.text;
 }
-async function editEntryText(ctx, entry, tui) {
+function uiHost(ctx) {
+  return ctx.ui.custom((ui, _theme, _keybindings, done) => {
+    done(ui);
+    return { render: () => [] };
+  }, OVERLAY_OPTIONS);
+}
+async function editEntryText(ctx, entry, ui) {
   const original = editableEntryText(entry);
   const editorCommand = pluginConfig.editorCommand || getEditorCommand();
   let edited;
-  if (editorCommand && tui) {
-    tui.stop();
-    try {
-      edited = await openInEditor(editorCommand, original, {
-        extension: ".md",
-        trimTrailingNewline: !original.endsWith(`
+  if (editorCommand && ui) {
+    edited = await ui.suspend(() => openInEditor(editorCommand, original, {
+      extension: ".md",
+      trimTrailingNewline: !original.endsWith(`
 `)
-      });
-    } finally {
-      tui.start();
-      tui.requestRender(true);
-    }
+    }));
   } else {
     edited = await ctx.ui.editor("Edit stashed prompt", original, undefined, { promptStyle: false });
   }
@@ -2404,13 +2402,7 @@ async function editEntryText(ctx, entry, tui) {
   return { text: edited };
 }
 function clearEditorAfterStash(ctx, inputMode) {
-  const editor = activeEditor(ctx);
-  if (editor) {
-    editor.setDraft(inputMode === "queue" ? "/queue " : "");
-    editor.tui?.requestRender();
-  } else {
-    ctx.ui.setEditorText(inputMode === "queue" ? "/queue " : "");
-  }
+  ctx.ui.setEditorText(inputMode === "queue" ? "/queue " : "");
 }
 function compactAge(stashedAtMs, now) {
   const elapsed = Math.max(0, now - stashedAtMs);
@@ -2443,8 +2435,8 @@ ${text.slice(-2047)}`;
   });
 }
 function showBrowser(ctx, live, initial, targets) {
-  return ctx.ui.custom((tui, theme, _keybindings, done) => {
-    const searchInput = new Input2;
+  return ctx.ui.custom((ui, theme, _keybindings, done) => {
+    const searchInput = new TextField;
     searchInput.prompt = "/";
     searchInput.setValue(initial.query);
     const currentSessionId = ctx.sessionManager.getSessionId();
@@ -2464,7 +2456,7 @@ function showBrowser(ctx, live, initial, targets) {
       filteredEntries = filterStashEntries(scopedEntries, searchInput.getValue(), scope === "all");
       selected = 0;
       previewOffset = 0;
-      tui.requestRender();
+      ui.requestRender();
     };
     const toggleScope = () => {
       scope = scope === "current" ? "all" : "current";
@@ -2476,7 +2468,7 @@ function showBrowser(ctx, live, initial, targets) {
         return;
       selected = Math.max(0, Math.min(filteredEntries.length - 1, selected + delta));
       previewOffset = 0;
-      tui.requestRender();
+      ui.requestRender();
     };
     const previewModel = (width) => {
       const entry = selectedEntry();
@@ -2501,7 +2493,7 @@ function showBrowser(ctx, live, initial, targets) {
       if (index === -1)
         previewOffset = 0;
       selected = index !== -1 ? index : Math.max(0, Math.min(selected, filteredEntries.length - 1));
-      tui.requestRender();
+      ui.requestRender();
     };
     const exitSearch = (clear) => {
       searching = false;
@@ -2510,7 +2502,7 @@ function showBrowser(ctx, live, initial, targets) {
         searchInput.setValue("");
         applySearch();
       } else {
-        tui.requestRender();
+        ui.requestRender();
       }
     };
     const browserState = () => ({
@@ -2542,31 +2534,28 @@ function showBrowser(ctx, live, initial, targets) {
     const finishEdit = () => {
       const entry = selectedEntry();
       if (entry)
-        done({ type: "edit", entry, ...browserState(), tui });
+        done({ type: "edit", entry, ...browserState(), ui });
     };
     return {
       dispose() {
         live.changed = undefined;
       },
-      invalidate() {
-        previewCache = undefined;
-        searchInput.invalidate();
-      },
       handleInput(data) {
-        if (matchesKey2(data, Key2.ctrl("c"))) {
+        const key = readKey(data);
+        if (keyMatches(key, "ctrl+c")) {
           done(null);
           return;
         }
         if (searching) {
-          if (matchesKey2(data, Key2.escape)) {
+          if (keyMatches(key, "escape")) {
             exitSearch(true);
-          } else if (matchesKey2(data, Key2.enter)) {
+          } else if (keyMatches(key, "enter")) {
             finishSelected("restore");
-          } else if (matchesKey2(data, Key2.tab)) {
+          } else if (keyMatches(key, "tab")) {
             exitSearch(false);
-          } else if (matchesKey2(data, Key2.up)) {
+          } else if (keyMatches(key, "up")) {
             moveSelection(-1);
-          } else if (matchesKey2(data, Key2.down)) {
+          } else if (keyMatches(key, "down")) {
             moveSelection(1);
           } else {
             const before = searchInput.getValue();
@@ -2574,60 +2563,60 @@ function showBrowser(ctx, live, initial, targets) {
             if (searchInput.getValue() !== before)
               applySearch();
             else
-              tui.requestRender();
+              ui.requestRender();
           }
           return;
         }
-        const key = extractPrintableText2(data);
-        if (key === "/") {
+        const char = key?.text;
+        if (char === "/") {
           searching = true;
           searchInput.focused = true;
-          tui.requestRender();
-        } else if (key === "g") {
+          ui.requestRender();
+        } else if (char === "g") {
           toggleScope();
-        } else if (matchesKey2(data, Key2.escape)) {
+        } else if (keyMatches(key, "escape")) {
           if (searchInput.getValue())
             exitSearch(true);
           else
             done(null);
-        } else if (matchesKey2(data, Key2.up)) {
+        } else if (keyMatches(key, "up")) {
           moveSelection(-1);
-        } else if (matchesKey2(data, Key2.down)) {
+        } else if (keyMatches(key, "down")) {
           moveSelection(1);
-        } else if (matchesKey2(data, Key2.home)) {
+        } else if (keyMatches(key, "home")) {
           moveSelection(-filteredEntries.length);
-        } else if (matchesKey2(data, Key2.end)) {
+        } else if (keyMatches(key, "end")) {
           moveSelection(filteredEntries.length);
-        } else if (matchesKey2(data, Key2.pageUp) || key === "[") {
+        } else if (keyMatches(key, "pageUp") || char === "[") {
           previewOffset = Math.max(0, previewOffset - previewRows);
-          tui.requestRender();
-        } else if (matchesKey2(data, Key2.pageDown) || key === "]") {
+          ui.requestRender();
+        } else if (keyMatches(key, "pageDown") || char === "]") {
           previewOffset += previewRows;
-          tui.requestRender();
-        } else if (matchesKey2(data, Key2.enter) || key === "r") {
+          ui.requestRender();
+        } else if (keyMatches(key, "enter") || char === "r") {
           finishSelected("restore");
-        } else if (key === "p") {
+        } else if (char === "p") {
           finishSelected("pop");
-        } else if (key === "q") {
+        } else if (char === "q") {
           finishSelected("queue");
-        } else if (key === "Q") {
+        } else if (char === "Q") {
           finishSelected("submit-queue");
-        } else if (key === "s" && targets.length > 0) {
+        } else if (char === "s" && targets.length > 0) {
           const entry = selectedEntry();
           if (entry)
             done({ type: "send", entry, targets, ...browserState() });
-        } else if (key === "e") {
+        } else if (char === "e") {
           finishEdit();
-        } else if (key === "l") {
+        } else if (char === "l") {
           finishToggleLock();
-        } else if (key === "d" || matchesKey2(data, Key2.delete)) {
+        } else if (char === "d" || keyMatches(key, "delete")) {
           finishDelete();
-        } else if (key === "D") {
+        } else if (char === "D") {
           finishDeleteAll();
         }
       },
       render(width) {
-        const terminalRows = Math.max(1, tui.terminal.rows);
+        const terminalRows = Math.max(1, ui.size().rows);
         const renderWidth = Math.max(1, width);
         const activeScopeLabel = scope === "current" ? "This chat" : "All chats";
         const entry = selectedEntry();
@@ -2675,12 +2664,12 @@ function showBrowser(ctx, live, initial, targets) {
           const suffix = ` ${theme.fg("dim", count)} `;
           const fieldWidth = Math.max(1, contentWidth - visibleWidth2(prefix) - visibleWidth2(suffix));
           const field = searching ? searchInput.render(fieldWidth)[0] ?? "/" : theme.fg("text", `/${query}`);
-          const clipped = truncateToWidth2(field, fieldWidth);
+          const clipped = truncate2(field, fieldWidth);
           return `${prefix}${clipped}${" ".repeat(Math.max(0, fieldWidth - visibleWidth2(clipped)))}${suffix}`;
         };
         const ruleCell = (label, cellWidth) => {
           const text = ` ${label} `;
-          const heading = theme.fg("accent", theme.bold(truncateToWidth2(text, cellWidth, "")));
+          const heading = theme.fg("accent", theme.bold(truncate2(text, cellWidth, "")));
           const rule = theme.fg("muted", "\u2500".repeat(Math.max(0, cellWidth - visibleWidth2(text))));
           return `${heading}${rule}`;
         };
@@ -2694,10 +2683,10 @@ function showBrowser(ctx, live, initial, targets) {
           const age = theme.fg("dim", compactAge(item.stashedAtMs, renderNow));
           const prefix = ` ${cursor} ${mode}${lock ? ` ${lock}` : ""}${conflict ? ` ${conflict}` : ""}${attachmentCount ? ` ${attachmentCount}` : ""} `;
           const originWidth = scope === "all" ? Math.min(18, Math.max(8, Math.floor(cellWidth * 0.28))) : 0;
-          const origin = originWidth > 0 ? theme.fg("dim", truncateToWidth2(item.displayOrigin, originWidth)) : "";
+          const origin = originWidth > 0 ? theme.fg("dim", truncate2(item.displayOrigin, originWidth)) : "";
           const suffix = `${origin ? `${origin} ` : ""}${age}`;
           const available = Math.max(1, cellWidth - visibleWidth2(prefix) - visibleWidth2(suffix) - 1);
-          const summary = truncateToWidth2(item.displayHeadline, available);
+          const summary = truncate2(item.displayHeadline, available);
           const styled = isSelected ? theme.fg("accent", theme.bold(summary)) : summary;
           const gap = " ".repeat(Math.max(1, cellWidth - visibleWidth2(prefix) - visibleWidth2(summary) - visibleWidth2(suffix)));
           return `${prefix}${styled}${gap}${suffix}`;
@@ -2707,15 +2696,15 @@ function showBrowser(ctx, live, initial, targets) {
           const position = entry ? `${selected + 1}/${filteredEntries.length}` : `0/${filteredEntries.length}`;
           const mode = entry ? ` \xB7 ${entry.inputMode === "queue" ? queueGlyph : draftGlyph}${entry.locked ? " [L]" : ""}${entry.preserved ? " [C]" : ""}${entry.attachments.length > 0 ? ` +${entry.attachments.length}` : ""}` : "";
           const scopeLabel = scope === "current" ? "This chat" : entry?.displayOrigin ?? "All chats";
-          const header = truncateToWidth2(searching ? searchInput.render(renderWidth)[0] ?? "/" : `Stash ${position} \xB7 ${scopeLabel}${mode}`, renderWidth, "");
+          const header = truncate2(searching ? searchInput.render(renderWidth)[0] ?? "/" : `Stash ${position} \xB7 ${scopeLabel}${mode}`, renderWidth, "");
           const searchLine = searching || query ? `${searchIcon} ${query ? `/${query}` : "/"}` : `${searchIcon} / search \xB7 g ${scope === "current" ? "all chats" : "this chat"}`;
           if (!entry) {
             const noCurrentStashes = emptyCurrent;
             return [
               theme.fg("accent", header),
-              truncateToWidth2(searchLine, renderWidth, ""),
-              theme.fg("muted", truncateToWidth2(noCurrentStashes ? "No stashes in this chat" : "No matching prompts", renderWidth, "")),
-              ...noCurrentStashes && entries.length > 0 ? [theme.fg("dim", truncateToWidth2(`${entries.length} elsewhere \xB7 press g`, renderWidth, ""))] : []
+              truncate2(searchLine, renderWidth, ""),
+              theme.fg("muted", truncate2(noCurrentStashes ? "No stashes in this chat" : "No matching prompts", renderWidth, "")),
+              ...noCurrentStashes && entries.length > 0 ? [theme.fg("dim", truncate2(`${entries.length} elsewhere \xB7 press g`, renderWidth, ""))] : []
             ].slice(0, terminalRows);
           }
           const visiblePreviewRows = Math.max(0, terminalRows - 2);
@@ -2726,8 +2715,8 @@ function showBrowser(ctx, live, initial, targets) {
           const page = previewPage(model, previewOffset, visiblePreviewRows);
           return [
             theme.fg("accent", header),
-            truncateToWidth2(searchLine, renderWidth, ""),
-            ...page.map((line) => truncateToWidth2(line, renderWidth, ""))
+            truncate2(searchLine, renderWidth, ""),
+            ...page.map((line) => truncate2(line, renderWidth, ""))
           ].slice(0, terminalRows);
         }
         const frame = createFrame(theme, renderWidth);
@@ -2857,28 +2846,24 @@ function notifyRestored(ctx, summary, failures, detail) {
 }
 var DUPLICATE_SAVE_WINDOW_MS = 500;
 var lastSave;
-function saveKey(sessionId, composer) {
-  const hash = createHash("sha256");
-  hash.update(JSON.stringify([sessionId, composer.draft.inputMode, composer.draft.text]));
-  for (const image of composer.images)
-    hash.update(`\x00${image.mimeType}\x00${image.data}`);
-  return hash.digest("hex");
+function saveKey(sessionId, draft) {
+  return createHash("sha256").update(JSON.stringify([sessionId, draft.inputMode, draft.text])).digest("hex");
 }
 async function stashCurrent(ctx) {
   const composer = readComposerDraft(ctx);
-  if (composer.draft.text.length === 0 && composer.images.length === 0) {
+  if (composer.text.length === 0) {
     ctx.ui.notify("Nothing to stash", "info");
     return;
   }
   const origin = currentStashOrigin(ctx);
   const key = saveKey(origin.sessionId, composer);
   if (lastSave?.key === key && Date.now() - lastSave.at < DUPLICATE_SAVE_WINDOW_MS) {
-    clearEditorAfterStash(ctx, composer.draft.inputMode);
+    clearEditorAfterStash(ctx, composer.inputMode);
     return;
   }
-  const fileBacked = composer.images.length > 0 || Buffer.byteLength(composer.draft.text, "utf8") > MAX_PROMPT_BYTES;
+  const fileBacked = Buffer.byteLength(composer.text, "utf8") > MAX_PROMPT_BYTES;
   const { draft, repeated } = inStore(true, () => {
-    const captured = fileBacked ? persistDraftAttachments(composer) : { ...composer.draft, attachments: [] };
+    const captured = fileBacked ? persistDraftAttachments(composer) : { ...composer, attachments: [] };
     let newest;
     try {
       newest = loadEntries().entries.find((entry) => isCurrentChat(entry, origin.sessionId));
@@ -3175,7 +3160,7 @@ async function browseNative(ctx, host, live) {
     async editText(entry) {
       const viaTui = async () => {
         await host.close(NATIVE_BROWSER_ID);
-        return editEntryText(ctx, entry, ACTIVE_EDITORS.get(ctx.sessionManager)?.tui);
+        return editEntryText(ctx, entry, await uiHost(ctx));
       };
       if (pluginConfig.editorCommand)
         return viaTui();
@@ -3287,7 +3272,7 @@ async function runBrowserAction(ctx, action, entries, ui = {}) {
     return { value, next: loadEntriesForUi(ctx) };
   });
   if (action.type === "edit") {
-    const edit = ui.editText ? await ui.editText(action.entry) : await editEntryText(ctx, action.entry, action.tui);
+    const edit = ui.editText ? await ui.editText(action.entry) : await editEntryText(ctx, action.entry, action.ui);
     if (typeof edit === "string") {
       ctx.ui.notify(edit === "unchanged" ? "Stashed prompt unchanged" : "Stashed prompt edit cancelled", "info");
       return entries;
@@ -3326,7 +3311,7 @@ async function runBrowserAction(ctx, action, entries, ui = {}) {
       ctx.ui.notify("Unlock this stash before deleting it", "warning");
       return entries;
     }
-    const confirmed = ui.confirmed || await ctx.ui.confirm("Delete stashed prompt?", `Permanently delete \u201C${truncateToWidth2(action.entry.displayHeadline, 80)}\u201D from ${action.entry.displayTimestamp}${action.scope === "all" ? ` \xB7 ${action.entry.displayOrigin}` : ""}?`, { initialIndex: 1 });
+    const confirmed = ui.confirmed || await ctx.ui.confirm("Delete stashed prompt?", `Permanently delete \u201C${truncate2(action.entry.displayHeadline, 80)}\u201D from ${action.entry.displayTimestamp}${action.scope === "all" ? ` \xB7 ${action.entry.displayOrigin}` : ""}?`, { initialIndex: 1 });
     if (!confirmed)
       return entries;
     const { value: deleted, next } = thenReload(() => {
@@ -3360,7 +3345,7 @@ async function runBrowserAction(ctx, action, entries, ui = {}) {
   const { entry } = action;
   const pop = action.type === "pop";
   const { failures, outcome } = readStore(() => {
-    const restored = restoreIntoComposer(ctx, entry, { forceQueue: action.type === "queue", links: !pop });
+    const restored = restoreIntoComposer(ctx, entry, { forceQueue: action.type === "queue" });
     if (!pop || entry.locked || restored.length > 0) {
       markEntryUsed(entry);
       return { failures: restored, outcome: "kept" };
@@ -3393,7 +3378,7 @@ async function run(ctx, action) {
     await action();
   } catch (error) {
     const raw = error instanceof Error ? error.message : String(error);
-    const message = truncateToWidth2(displayText(raw).replaceAll(`
+    const message = truncate2(displayText(raw).replaceAll(`
 `, " "), 320);
     ctx.ui.notify(`OMS failed: ${message}`, "error");
   }
@@ -3411,8 +3396,8 @@ async function promptStash(pi) {
     if (!isMainTui(ctx))
       return;
     pluginEvents = pi.events;
+    pluginApi = pi;
     pluginConfig = await loadPluginConfig(ctx.cwd, true);
-    installEditorBridge(ctx);
     warmStoragePermissions();
     if (pluginConfig.retentionDays > 0) {
       startupScan = new Promise((done) => {

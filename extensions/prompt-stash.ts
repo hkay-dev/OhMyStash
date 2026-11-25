@@ -21,30 +21,29 @@ import {
   type FSWatcher,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import type {
   ExtensionAPI,
   ExtensionContext,
+  ExtensionUiHost,
+  KeyId,
 } from "@oh-my-pi/pi-coding-agent";
 import { getAgentDir } from "@oh-my-pi/pi-utils";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
-import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components";
 import { getEditorCommand, openInEditor } from "@oh-my-pi/pi-coding-agent/utils/external-editor";
+import { fuzzyFilter } from "@oh-my-pi/pi-coding-agent/utils/fuzzy";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { replaceTabs, truncate, visibleWidth } from "@oh-my-pi/pi-tui/text/width";
+import { presetSymbols } from "@oh-my-pi/pi-tui/theme/symbols";
 import {
-  extractPrintableText,
-  fuzzyFilter,
-  Input,
-  Key,
-  matchesKey,
-  replaceTabs,
-  truncateToWidth,
-  visibleWidth,
-  type KeyId,
-  type TUI,
-} from "@oh-my-pi/pi-tui";
-import { SYMBOL_PRESETS } from "@oh-my-pi/pi-tui/theme/symbols";
-import { createFrame, extensionIcon, fitToWidth, OVERLAY_OPTIONS, selectOption } from "./ui";
+  createFrame,
+  extensionIcon,
+  fitToWidth,
+  keyMatches,
+  OVERLAY_OPTIONS,
+  readKey,
+  selectOption,
+  TextField,
+} from "./ui";
 import { collectSendTargets, type SendTarget } from "./send-targets";
 import { collectNativeHost, type NativeListEvent, type NativeListSpec, type NativeUiHost } from "./native-ui";
 import {
@@ -138,8 +137,8 @@ type BrowserAction =
   | ({ type: "submit-queue"; entry: StashEntry } & BrowserState)
   | ({ type: "send"; entry: StashEntry; targets: SendTarget[] } & BrowserState)
   | ({ type: "toggle-lock"; entry: StashEntry } & BrowserState)
-  // The TUI browser passes its tui for the external editor; a native host edits on its own.
-  | ({ type: "edit"; entry: StashEntry; tui?: TUI } & BrowserState)
+  // The TUI browser passes its UI host for the external editor; a native host edits on its own.
+  | ({ type: "edit"; entry: StashEntry; ui?: ExtensionUiHost } & BrowserState)
   | ({ type: "delete"; entry: StashEntry } & BrowserState)
   | ({ type: "delete-all"; entries: StashEntry[] } & BrowserState)
   | null;
@@ -237,7 +236,8 @@ const DEFAULT_CONFIG: PromptStashConfig = {
 let pluginConfig = { ...DEFAULT_CONFIG };
 // The main session's event bus, where other plugins offer places to send a stash and native dialogs.
 let pluginEvents: ExtensionAPI["events"] | undefined;
-const ACTIVE_EDITORS = new WeakMap<object, CustomEditor>();
+// The main session's API, which sends a submitted queue stash.
+let pluginApi: ExtensionAPI | undefined;
 
 class EntryConflictError extends Error {}
 class StorageQuotaError extends Error {}
@@ -603,26 +603,6 @@ function persistAsset(data: Buffer, extension?: string): string {
     }
     throw error;
   }
-}
-
-function attachmentDisplayPath(attachment: StoredImageAttachment): string {
-  const canonical = assetPath(attachment.ref);
-  const extension = blobExtensionForImageMimeType(attachment.mimeType);
-  if (!extension) return canonical;
-  const displayPath = `${canonical}.${extension}`;
-  try {
-    const canonicalStat = lstatSync(canonical);
-    const displayStat = lstatSync(displayPath);
-    if (
-      !displayStat.isSymbolicLink() &&
-      displayStat.isFile() &&
-      displayStat.dev === canonicalStat.dev &&
-      displayStat.ino === canonicalStat.ino
-    ) {
-      return displayPath;
-    }
-  } catch {}
-  return canonical;
 }
 
 function newestCandidateNames(dir: string) {
@@ -1784,151 +1764,58 @@ function parseEditorDraft(text: string): EditorDraft {
   return { inputMode: "normal", text };
 }
 
-function activeEditor(ctx: ExtensionContext): CustomEditor | undefined {
-  const editor = ACTIVE_EDITORS.get(ctx.sessionManager);
-  // Another extension can swap the composer later; a replaced editor never regains focus.
-  return editor?.tui && editor.tui.getFocused() !== editor ? undefined : editor;
-}
-
 function hasEditorContent(ctx: ExtensionContext): boolean {
-  // Attachments live as chip tokens in the text; pendingImages also keeps deleted chips' images.
+  // Attachments live as chip tokens in the text.
   return parseEditorDraft(ctx.ui.getEditorText()).text.length > 0;
-}
-
-function installEditorBridge(ctx: ExtensionContext): void {
-  if (ctx.mode !== "tui") return;
-  const sessionManager = ctx.sessionManager;
-  ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-    // OMP hands only text to a new composer, so keep the live one with its pasted payloads.
-    const focused = tui.getFocused?.();
-    const editor = focused instanceof CustomEditor ? focused : new CustomEditor(tui, theme, keybindings);
-    if (editor === focused) editor.tui ??= tui;
-    ACTIVE_EDITORS.set(sessionManager, editor);
-    return editor;
-  });
 }
 
 // Compiled OMP does not serve pi-tui's prompt/* modules to extensions, so OMP's attachment token
 // logic is mirrored here. Chips read "<icon> #N" with an icon from any symbol preset.
 const VISION_MARKER = /\[(Image|Video) #([1-9]\d*)((?:,[^\]\n]*)?)\](?: attachment:\/\/(\2))?/g;
 const ATTACHMENT_TOKEN = new RegExp(
-  `\\[(?:Image|Video) #[1-9]\\d*(?:,[^\\]\\n]*)?\\]|(?:${Object.values(SYMBOL_PRESETS)
-    .flatMap((preset) => [preset["chip.image"], preset["chip.video"], preset["chip.paste"]])
-    .map((icon) => icon.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  `\\[(?:Image|Video) #[1-9]\\d*(?:,[^\\]\\n]*)?\\]|(?:${(["unicode", "nerd", "ascii"] as const)
+    .flatMap((name) => {
+      const preset = presetSymbols(name);
+      return [preset["chip.image"], preset["chip.video"], preset["chip.paste"]];
+    })
+    .flatMap((icon) => (icon === undefined ? [] : [icon.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")]))
     .join("|")}) #[1-9]\\d*`,
 );
 
-// Copied from pi-tui's prompt/image-format.ts, which compiled OMP does not serve to extensions
-// either. Stored images keep the display extensions OMP gives them.
-const IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/jpg": "jpg",
-  "image/gif": "gif",
-  "image/webp": "webp",
-  "image/svg+xml": "svg",
-};
-
-function normalizeBlobExtension(extension: string | undefined): string | undefined {
-  if (!extension) return undefined;
-  const normalized = extension.startsWith(".") ? extension.slice(1) : extension;
-  if (normalized.length === 0 || normalized.length > 32) return undefined;
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(normalized)) return undefined;
-  return normalized.toLowerCase();
+// Reads the composer's draft. OMP lets a plugin read the draft's text only, not what its pasted-block and
+// attachment chips stand for, so a draft with one can't be stashed whole.
+function readComposerDraft(ctx: ExtensionContext): EditorDraft {
+  const draft = parseEditorDraft(ctx.ui.getEditorText());
+  if (ATTACHMENT_TOKEN.test(draft.text) || COLLAPSED_PASTE_TOKEN.test(draft.text)) {
+    throw new Error(
+      "The draft holds a pasted block or attachment, which OMP doesn't let OhMyStash read. Remove it or send it, then stash again",
+    );
+  }
+  return draft;
 }
 
-function blobExtensionForImageMimeType(mimeType: string | undefined): string | undefined {
-  if (!mimeType) return undefined;
-  const lower = mimeType.toLowerCase();
-  const known = IMAGE_EXTENSION_BY_MIME[lower];
-  if (known) return known;
-  if (!lower.startsWith("image/")) return undefined;
-  const subtype = lower.slice("image/".length).split(";")[0]?.split("+")[0];
-  return normalizeBlobExtension(subtype);
-}
-
-type ComposerDraft = { draft: EditorDraft; images: ImageContent[] };
-
-// Reads the composer without touching storage: the draft, with image markers numbered densely, and
-// the images those markers still reference.
-function readComposerDraft(ctx: ExtensionContext): ComposerDraft {
-  const editor = activeEditor(ctx);
-  if (!editor) {
-    const draft = parseEditorDraft(ctx.ui.getEditorText());
-    if (ATTACHMENT_TOKEN.test(draft.text) || COLLAPSED_PASTE_TOKEN.test(draft.text)) {
-      throw new Error("Restart OMP once so OhMyStash can attach to the native editor");
-    }
-    return { draft, images: [] };
-  }
-  // Deleted chips leave their images in pendingImages. Like OMP's submit, keep only images the
-  // text still references and renumber their markers densely.
-  const expanded = editor.getExpandedText();
-  const keep = [...new Set(Array.from(expanded.matchAll(VISION_MARKER), (match) => Number(match[2])))]
-    .filter((n) => n <= editor.pendingImages.length)
-    .sort((a, b) => a - b);
-  const draft = parseEditorDraft(
-    expanded.replace(VISION_MARKER, (marker, kind: string, n: string, tail: string, ref: string | undefined) => {
-      const index = keep.indexOf(Number(n)) + 1;
-      if (index === 0) return marker;
-      return `[${kind} #${index}${tail}]${ref === undefined ? "" : ` attachment://${index}`}`;
-    }),
-  );
-  const images = editor.pendingImages.filter((_, index) => keep.includes(index + 1));
-  if (images.length > MAX_ATTACHMENTS) {
-    throw new Error(`An OMS entry can contain at most ${MAX_ATTACHMENTS} attachments`);
-  }
-  return { draft, images };
-}
-
-function persistDraftAttachments({ draft: expandedDraft, images }: ComposerDraft): CapturedDraft {
-  let attachmentBytes = 0;
-  const attachments: StoredAttachment[] = [];
-  // A draft can repeat one image many times; its bytes are checked and stored once.
-  const stored = new Map<string, string>();
-  for (const image of images) {
-    const data = Buffer.from(image.data, "base64");
-    attachmentBytes += data.byteLength;
-    if (attachmentBytes > MAX_ENTRY_ATTACHMENT_BYTES) {
-      throw new Error("OMS attachments exceed the 128 MiB per-entry limit");
-    }
-    const extension = blobExtensionForImageMimeType(image.mimeType);
-    const key = `${extension ?? ""}:${image.data}`;
-    let ref = stored.get(key);
-    if (ref === undefined) {
-      ref = persistAsset(data, extension);
-      stored.set(key, ref);
-    }
-    attachments.push({
-      kind: "image",
-      ref,
-      byteLength: data.byteLength,
-      mimeType: image.mimeType,
-      ...(image.detail === undefined ? {} : { detail: image.detail }),
-    });
-  }
-  const textBytes = Buffer.byteLength(expandedDraft.text, "utf8");
+// Stores the text of a draft over 1 MiB as a body attachment and leaves a short stand-in as the stash's text.
+function persistDraftAttachments(draft: EditorDraft): CapturedDraft {
+  const textBytes = Buffer.byteLength(draft.text, "utf8");
   if (textBytes <= MAX_PROMPT_BYTES) {
-    return { ...expandedDraft, attachments };
+    return { ...draft, attachments: [] };
   }
-  attachmentBytes += textBytes;
-  if (textBytes > MAX_ATTACHMENT_BYTES || attachmentBytes > MAX_ENTRY_ATTACHMENT_BYTES) {
+  if (textBytes > MAX_ATTACHMENT_BYTES) {
     throw new Error("Large pasted prompt exceeds the 64 MiB text attachment limit");
   }
-  if (attachments.length >= MAX_ATTACHMENTS) {
-    throw new Error(`An OMS entry can contain at most ${MAX_ATTACHMENTS} attachments`);
-  }
-  const ref = persistAsset(Buffer.from(expandedDraft.text, "utf8"), "txt");
-  attachments.push({
-    kind: "body",
-    ref,
-    byteLength: textBytes,
-    charCount: expandedDraft.text.length,
-    lineCount: promptLineCount(expandedDraft.text),
-  });
+  const ref = persistAsset(Buffer.from(draft.text, "utf8"), "txt");
   return {
-    inputMode: expandedDraft.inputMode,
-    text: `[Large pasted prompt · ${promptLineCount(expandedDraft.text)} lines · ${expandedDraft.text.length} chars]`,
-    attachments,
+    inputMode: draft.inputMode,
+    text: `[Large pasted prompt · ${promptLineCount(draft.text)} lines · ${draft.text.length} chars]`,
+    attachments: [
+      {
+        kind: "body",
+        ref,
+        byteLength: textBytes,
+        charCount: draft.text.length,
+        lineCount: promptLineCount(draft.text),
+      },
+    ],
   };
 }
 
@@ -1936,7 +1823,6 @@ type AttachmentFailure = { label: string; reason: string };
 type ResolvedAttachments = {
   body?: string;
   images: ImageContent[];
-  imageLinks: string[];
   // The 1-based numbers, among the stash's images, of the images that loaded.
   imageNumbers: number[];
   imageCount: number;
@@ -1948,7 +1834,6 @@ type ResolvedAttachments = {
 function resolveStoredAttachments(entry: StashEntry): ResolvedAttachments {
   let body: string | undefined;
   const images: ImageContent[] = [];
-  const imageLinks: string[] = [];
   const imageNumbers: number[] = [];
   const failures: AttachmentFailure[] = [];
   let imageCount = 0;
@@ -1971,14 +1856,13 @@ function resolveStoredAttachments(entry: StashEntry): ResolvedAttachments {
         type: "image", data: data.toString("base64"), mimeType: attachment.mimeType,
         ...(attachment.detail === undefined ? {} : { detail: attachment.detail }),
       });
-      imageLinks.push(pathToFileURL(attachmentDisplayPath(attachment)).href);
       imageNumbers.push(imageCount);
     } else {
       if (body !== undefined) throw new Error("OMS entry contains multiple large text bodies");
       body = data.toString("utf8");
     }
   }
-  return { body, images, imageLinks, imageNumbers, imageCount, failures };
+  return { body, images, imageNumbers, imageCount, failures };
 }
 
 // Renumbers the image markers to the images that loaded. The marker of an image that couldn't be
@@ -2001,72 +1885,60 @@ function describeFailures(failures: AttachmentFailure[]): string {
   return [...byReason].map(([reason, labels]) => `${labels.join(", ")} (${reason})`).join("; ");
 }
 
-// Puts a stash into the composer and returns the attachments that couldn't be read; the rest of the
-// draft comes back without them. With `links` off, OMP makes the image links itself, for a stash
-// that's about to be deleted.
+// Why a stash's images stay out of the composer: OMP lets a plugin set the draft's text only.
+const IMAGES_NOT_ATTACHED = "OMP doesn't let plugins attach images to the composer";
+
+// Puts a stash's text into the composer and returns the attachments that couldn't come back. A large
+// pasted body is read back into the text. Images can't be attached, so their markers read as unavailable.
 function restoreIntoComposer(
   ctx: ExtensionContext,
   entry: StashEntry,
-  options: { forceQueue?: boolean; links?: boolean } = {},
+  options: { forceQueue?: boolean } = {},
 ): AttachmentFailure[] {
   // A restore followed by a stash is a new save, even when the text is the same.
   lastSave = undefined;
   const prefix = options.forceQueue || entry.inputMode === "queue" ? "/queue " : "";
-  const editor = activeEditor(ctx);
-  if (!editor) {
-    if (entry.attachments.length > 0) {
-      throw new Error("Restart OMP once so OhMyStash can restore native attachments");
-    }
+  const resolved = entry.attachments.length === 0 ? undefined : inStore(false, () => resolveStoredAttachments(entry));
+  if (!resolved) {
     ctx.ui.setEditorText(`${prefix}${entry.text}`);
     return [];
   }
-  const resolved = entry.attachments.length === 0 ? undefined : inStore(false, () => resolveStoredAttachments(entry));
-  const images = resolved?.images ?? [];
-  const text = resolved
-    ? renumberImageMarkers(resolved.body ?? entry.text, resolved.imageNumbers, resolved.imageCount)
-    : entry.text;
-  const links = options.links === false ? undefined : resolved?.imageLinks ?? [];
-  if (text.length > 1_000 || text.includes("\n")) {
-    editor.setDraft(prefix, images);
-    if (links) {
-      editor.pendingImageLinks = links;
-      editor.imageLinks = links;
-    }
-    // Restore saved content synchronously; terminal paste can open an async menu.
-    editor.insertPaste(text);
-  } else {
-    editor.setDraft(`${prefix}${text}`, images);
-    if (links) {
-      editor.pendingImageLinks = links;
-      editor.imageLinks = links;
-    }
-  }
-  editor.tui?.requestRender();
-  return resolved?.failures ?? [];
+  ctx.ui.setEditorText(`${prefix}${renumberImageMarkers(resolved.body ?? entry.text, [], resolved.imageCount)}`);
+  return [
+    ...resolved.failures,
+    ...resolved.imageNumbers.map((number) => ({ label: `Image #${number}`, reason: IMAGES_NOT_ATTACHED })),
+  ];
 }
 
-// Submits a stash as a /queue message. If an attachment couldn't be read, it stops at the draft
-// instead, so a partial prompt never goes out unseen.
+// Sends a stash as a queued message, with its images. If an attachment couldn't be read, it stops at the
+// draft instead, so a partial prompt never goes out unseen.
 function submitQueuedEntry(ctx: ExtensionContext, entry: StashEntry): "submitted" | "drafted" | "blocked" {
-  const editor = activeEditor(ctx);
-  if (!editor) {
-    throw new Error("Restart OMP once so OhMyStash can submit queued stashes");
-  }
   if (hasEditorContent(ctx)) {
     ctx.ui.notify("Stash or clear the current editor before submitting a queued stash", "warning");
     return "blocked";
   }
-  const failures = restoreIntoComposer(ctx, entry, { forceQueue: true });
-  markEntryUsed(entry);
-  if (failures.length > 0) {
+  const resolved = entry.attachments.length === 0 ? undefined : inStore(false, () => resolveStoredAttachments(entry));
+  if (resolved && resolved.failures.length > 0) {
+    const failures = restoreIntoComposer(ctx, entry, { forceQueue: true });
+    markEntryUsed(entry);
     ctx.ui.notify(
-      `Inserted the queued draft without submitting it, because it's missing ${describeFailures(failures)}. The stash file is unchanged`,
+      `Inserted the queued draft without submitting it, because ${describeFailures(failures)} couldn't be restored. The stash file is unchanged`,
       "warning",
     );
     return "drafted";
   }
-  // Enter follows user keybindings and may insert a newline instead of submitting.
-  editor.submit();
+  if (!pluginApi) throw new Error("OhMyStash can't submit queued stashes before the session starts");
+  lastSave = undefined;
+  markEntryUsed(entry);
+  const text = resolved?.body ?? entry.text;
+  const images = resolved?.images ?? [];
+  // An idle session starts a turn; a busy one queues the message after the current turn, like /queue.
+  pluginApi
+    .sendUserMessage(images.length > 0 ? [{ type: "text", text }, ...images] : text, ctx.isIdle() ? undefined : { deliverAs: "followUp" })
+    .catch((error: unknown) => {
+      const raw = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`OMS failed: ${truncate(displayText(raw).replaceAll("\n", " "), 320)}`, "error");
+    });
   return "submitted";
 }
 
@@ -2077,29 +1949,34 @@ function editableEntryText(entry: StashEntry): string {
   return body ? inStore(false, () => readAsset(body.ref, body.byteLength).toString("utf8")) : entry.text;
 }
 
+// The UI host a custom view receives, for a step that runs when no view is open. The view settles inside
+// its factory, so OMP never mounts it.
+function uiHost(ctx: ExtensionContext): Promise<ExtensionUiHost> {
+  return ctx.ui.custom<ExtensionUiHost>((ui, _theme, _keybindings, done) => {
+    done(ui);
+    return { render: () => [] };
+  }, OVERLAY_OPTIONS);
+}
+
 // Opens a stash in the configured editor and returns the edited text. Saving it is a separate
 // storage step.
 async function editEntryText(
   ctx: ExtensionContext,
   entry: StashEntry,
-  tui: TUI | undefined,
+  ui: ExtensionUiHost | undefined,
 ): Promise<{ text: string } | "unchanged" | "cancelled"> {
   const original = editableEntryText(entry);
   const editorCommand = pluginConfig.editorCommand || getEditorCommand();
   let edited: string | null | undefined;
-  if (editorCommand && tui) {
-    tui.stop();
-    try {
-      // Editors such as vim, nano, and helix end every saved file with a newline. Keep it only when
-      // the stash already ended with one, so quitting without changes leaves the stash untouched.
-      edited = await openInEditor(editorCommand, original, {
+  if (editorCommand && ui) {
+    // Editors such as vim, nano, and helix end every saved file with a newline. Keep it only when
+    // the stash already ended with one, so quitting without changes leaves the stash untouched.
+    edited = await ui.suspend(() =>
+      openInEditor(editorCommand, original, {
         extension: ".md",
         trimTrailingNewline: !original.endsWith("\n"),
-      });
-    } finally {
-      tui.start();
-      tui.requestRender(true);
-    }
+      }),
+    );
   } else {
     edited = await ctx.ui.editor(
       "Edit stashed prompt",
@@ -2114,13 +1991,7 @@ async function editEntryText(
 }
 
 function clearEditorAfterStash(ctx: ExtensionContext, inputMode: InputMode): void {
-  const editor = activeEditor(ctx);
-  if (editor) {
-    editor.setDraft(inputMode === "queue" ? "/queue " : "");
-    editor.tui?.requestRender();
-  } else {
-    ctx.ui.setEditorText(inputMode === "queue" ? "/queue " : "");
-  }
+  ctx.ui.setEditorText(inputMode === "queue" ? "/queue " : "");
 }
 
 
@@ -2165,8 +2036,8 @@ function showBrowser(
   targets: SendTarget[],
 ): Promise<BrowserAction> {
   return ctx.ui.custom<BrowserAction>(
-    (tui, theme, _keybindings, done) => {
-      const searchInput = new Input();
+    (ui, theme, _keybindings, done) => {
+      const searchInput = new TextField();
       searchInput.prompt = "/";
       searchInput.setValue(initial.query);
       const currentSessionId = ctx.sessionManager.getSessionId();
@@ -2198,7 +2069,7 @@ function showBrowser(
         );
         selected = 0;
         previewOffset = 0;
-        tui.requestRender();
+        ui.requestRender();
       };
       const toggleScope = () => {
         scope = scope === "current" ? "all" : "current";
@@ -2209,7 +2080,7 @@ function showBrowser(
         if (filteredEntries.length === 0) return;
         selected = Math.max(0, Math.min(filteredEntries.length - 1, selected + delta));
         previewOffset = 0;
-        tui.requestRender();
+        ui.requestRender();
       };
       const previewModel = (width: number) => {
         const entry = selectedEntry();
@@ -2235,7 +2106,7 @@ function showBrowser(
         const index = filteredEntries.findIndex((entry) => entry.id === selectedId);
         if (index === -1) previewOffset = 0;
         selected = index !== -1 ? index : Math.max(0, Math.min(selected, filteredEntries.length - 1));
-        tui.requestRender();
+        ui.requestRender();
       };
       const exitSearch = (clear: boolean) => {
         searching = false;
@@ -2244,7 +2115,7 @@ function showBrowser(
           searchInput.setValue("");
           applySearch();
         } else {
-          tui.requestRender();
+          ui.requestRender();
         }
       };
       const browserState = (): BrowserState => ({
@@ -2273,91 +2144,88 @@ function showBrowser(
       };
       const finishEdit = () => {
         const entry = selectedEntry();
-        if (entry) done({ type: "edit", entry, ...browserState(), tui });
+        if (entry) done({ type: "edit", entry, ...browserState(), ui });
       };
       return {
         dispose() {
           live.changed = undefined;
         },
-        invalidate() {
-          previewCache = undefined;
-          searchInput.invalidate();
-        },
         handleInput(data: string) {
-          if (matchesKey(data, Key.ctrl("c"))) {
+          const key = readKey(data);
+          if (keyMatches(key, "ctrl+c")) {
             done(null);
             return;
           }
           // While searching, every printable key, q and Q included, types into the search. The
           // letter actions work after Tab.
           if (searching) {
-            if (matchesKey(data, Key.escape)) {
+            if (keyMatches(key, "escape")) {
               exitSearch(true);
-            } else if (matchesKey(data, Key.enter)) {
+            } else if (keyMatches(key, "enter")) {
               finishSelected("restore");
-            } else if (matchesKey(data, Key.tab)) {
+            } else if (keyMatches(key, "tab")) {
               exitSearch(false);
-            } else if (matchesKey(data, Key.up)) {
+            } else if (keyMatches(key, "up")) {
               moveSelection(-1);
-            } else if (matchesKey(data, Key.down)) {
+            } else if (keyMatches(key, "down")) {
               moveSelection(1);
             } else {
               const before = searchInput.getValue();
               searchInput.handleInput(data);
               if (searchInput.getValue() !== before) applySearch();
-              else tui.requestRender();
+              else ui.requestRender();
             }
             return;
           }
           // Kitty's CSI-u forms of letter keys mean the same as the plain characters.
-          const key = extractPrintableText(data);
-          if (key === "/") {
+          const char = key?.text;
+          if (char === "/") {
             searching = true;
             searchInput.focused = true;
-            tui.requestRender();
-          } else if (key === "g") {
+            ui.requestRender();
+          } else if (char === "g") {
             toggleScope();
-          } else if (matchesKey(data, Key.escape)) {
+          } else if (keyMatches(key, "escape")) {
             if (searchInput.getValue()) exitSearch(true);
             else done(null);
-          } else if (matchesKey(data, Key.up)) {
+          } else if (keyMatches(key, "up")) {
             moveSelection(-1);
-          } else if (matchesKey(data, Key.down)) {
+          } else if (keyMatches(key, "down")) {
             moveSelection(1);
-          } else if (matchesKey(data, Key.home)) {
+          } else if (keyMatches(key, "home")) {
             moveSelection(-filteredEntries.length);
-          } else if (matchesKey(data, Key.end)) {
+          } else if (keyMatches(key, "end")) {
             moveSelection(filteredEntries.length);
-          } else if (matchesKey(data, Key.pageUp) || key === "[") {
+          } else if (keyMatches(key, "pageUp") || char === "[") {
             previewOffset = Math.max(0, previewOffset - previewRows);
-            tui.requestRender();
-          } else if (matchesKey(data, Key.pageDown) || key === "]") {
+            ui.requestRender();
+          } else if (keyMatches(key, "pageDown") || char === "]") {
             previewOffset += previewRows;
-            tui.requestRender();
-          } else if (matchesKey(data, Key.enter) || key === "r") {
+            ui.requestRender();
+          } else if (keyMatches(key, "enter") || char === "r") {
             finishSelected("restore");
-          } else if (key === "p") {
+          } else if (char === "p") {
             finishSelected("pop");
-          } else if (key === "q") {
+          } else if (char === "q") {
             finishSelected("queue");
-          } else if (key === "Q") {
+          } else if (char === "Q") {
             finishSelected("submit-queue");
-          } else if (key === "s" && targets.length > 0) {
+          } else if (char === "s" && targets.length > 0) {
             const entry = selectedEntry();
             if (entry) done({ type: "send", entry, targets, ...browserState() });
-          } else if (key === "e") {
+          } else if (char === "e") {
             finishEdit();
-          } else if (key === "l") {
+          } else if (char === "l") {
             finishToggleLock();
-          } else if (key === "d" || matchesKey(data, Key.delete)) {
+          } else if (char === "d" || keyMatches(key, "delete")) {
             finishDelete();
-          } else if (key === "D") {
+          } else if (char === "D") {
             finishDeleteAll();
           }
         },
         render(width: number) {
           // The overlay may fill the terminal; OMP drops taller output from the top, title first.
-          const terminalRows = Math.max(1, tui.terminal.rows);
+          const terminalRows = Math.max(1, ui.size().rows);
           const renderWidth = Math.max(1, width);
           const activeScopeLabel = scope === "current" ? "This chat" : "All chats";
           const entry = selectedEntry();
@@ -2431,14 +2299,14 @@ function showBrowser(
             const field = searching
               ? searchInput.render(fieldWidth)[0] ?? "/"
               : theme.fg("text", `/${query}`);
-            const clipped = truncateToWidth(field, fieldWidth);
+            const clipped = truncate(field, fieldWidth);
             return `${prefix}${clipped}${" ".repeat(Math.max(0, fieldWidth - visibleWidth(clipped)))}${suffix}`;
           };
           const ruleCell = (label: string, cellWidth: number): string => {
             const text = ` ${label} `;
             const heading = theme.fg(
               "accent",
-              theme.bold(truncateToWidth(text, cellWidth, "")),
+              theme.bold(truncate(text, cellWidth, "")),
             );
             const rule = theme.fg(
               "muted",
@@ -2460,14 +2328,14 @@ function showBrowser(
               scope === "all" ? Math.min(18, Math.max(8, Math.floor(cellWidth * 0.28))) : 0;
             const origin =
               originWidth > 0
-                ? theme.fg("dim", truncateToWidth(item.displayOrigin, originWidth))
+                ? theme.fg("dim", truncate(item.displayOrigin, originWidth))
                 : "";
             const suffix = `${origin ? `${origin} ` : ""}${age}`;
             const available = Math.max(
               1,
               cellWidth - visibleWidth(prefix) - visibleWidth(suffix) - 1,
             );
-            const summary = truncateToWidth(item.displayHeadline, available);
+            const summary = truncate(item.displayHeadline, available);
             const styled = isSelected ? theme.fg("accent", theme.bold(summary)) : summary;
             const gap = " ".repeat(
               Math.max(
@@ -2495,7 +2363,7 @@ function showBrowser(
               : "";
             const scopeLabel =
               scope === "current" ? "This chat" : (entry?.displayOrigin ?? "All chats");
-            const header = truncateToWidth(
+            const header = truncate(
               searching
                 ? searchInput.render(renderWidth)[0] ?? "/"
                 : `Stash ${position} · ${scopeLabel}${mode}`,
@@ -2510,17 +2378,17 @@ function showBrowser(
               const noCurrentStashes = emptyCurrent;
               return [
                 theme.fg("accent", header),
-                truncateToWidth(searchLine, renderWidth, ""),
+                truncate(searchLine, renderWidth, ""),
                 theme.fg(
                   "muted",
-                  truncateToWidth(
+                  truncate(
                     noCurrentStashes ? "No stashes in this chat" : "No matching prompts",
                     renderWidth,
                     "",
                   ),
                 ),
                 ...(noCurrentStashes && entries.length > 0
-                  ? [theme.fg("dim", truncateToWidth(`${entries.length} elsewhere · press g`, renderWidth, ""))]
+                  ? [theme.fg("dim", truncate(`${entries.length} elsewhere · press g`, renderWidth, ""))]
                   : []),
               ].slice(0, terminalRows);
             }
@@ -2532,8 +2400,8 @@ function showBrowser(
             const page = previewPage(model, previewOffset, visiblePreviewRows);
             return [
               theme.fg("accent", header),
-              truncateToWidth(searchLine, renderWidth, ""),
-              ...page.map((line) => truncateToWidth(line, renderWidth, "")),
+              truncate(searchLine, renderWidth, ""),
+              ...page.map((line) => truncate(line, renderWidth, "")),
             ].slice(0, terminalRows);
           }
 
@@ -2763,28 +2631,25 @@ function notifyRestored(ctx: ExtensionContext, summary: string, failures: Attach
 const DUPLICATE_SAVE_WINDOW_MS = 500;
 let lastSave: { key: string; at: number } | undefined;
 
-function saveKey(sessionId: string, composer: ComposerDraft): string {
-  const hash = createHash("sha256");
-  hash.update(JSON.stringify([sessionId, composer.draft.inputMode, composer.draft.text]));
-  for (const image of composer.images) hash.update(`\0${image.mimeType}\0${image.data}`);
-  return hash.digest("hex");
+function saveKey(sessionId: string, draft: EditorDraft): string {
+  return createHash("sha256").update(JSON.stringify([sessionId, draft.inputMode, draft.text])).digest("hex");
 }
 
 async function stashCurrent(ctx: ExtensionContext): Promise<void> {
   const composer = readComposerDraft(ctx);
-  if (composer.draft.text.length === 0 && composer.images.length === 0) {
+  if (composer.text.length === 0) {
     ctx.ui.notify("Nothing to stash", "info");
     return;
   }
   const origin = currentStashOrigin(ctx);
   const key = saveKey(origin.sessionId, composer);
   if (lastSave?.key === key && Date.now() - lastSave.at < DUPLICATE_SAVE_WINDOW_MS) {
-    clearEditorAfterStash(ctx, composer.draft.inputMode);
+    clearEditorAfterStash(ctx, composer.inputMode);
     return;
   }
-  const fileBacked = composer.images.length > 0 || Buffer.byteLength(composer.draft.text, "utf8") > MAX_PROMPT_BYTES;
+  const fileBacked = Buffer.byteLength(composer.text, "utf8") > MAX_PROMPT_BYTES;
   const { draft, repeated } = inStore(true, () => {
-    const captured: CapturedDraft = fileBacked ? persistDraftAttachments(composer) : { ...composer.draft, attachments: [] };
+    const captured: CapturedDraft = fileBacked ? persistDraftAttachments(composer) : { ...composer, attachments: [] };
     // Stashing what this chat's newest stash already holds, for example after restoring it,
     // updates that stash instead of adding a copy.
     let newest: StashEntry | undefined;
@@ -3133,7 +2998,7 @@ async function browseNative(
       const viaTui = async () => {
         // A pending native list would hold the keyboard while a terminal editor runs.
         await host.close(NATIVE_BROWSER_ID);
-        return editEntryText(ctx, entry, ACTIVE_EDITORS.get(ctx.sessionManager)?.tui);
+        return editEntryText(ctx, entry, await uiHost(ctx));
       };
       if (pluginConfig.editorCommand) return viaTui();
       const original = editableEntryText(entry);
@@ -3264,7 +3129,7 @@ async function runBrowserAction(
   if (action.type === "edit") {
     const edit = ui.editText
       ? await ui.editText(action.entry)
-      : await editEntryText(ctx, action.entry, action.tui!);
+      : await editEntryText(ctx, action.entry, action.ui);
     if (typeof edit === "string") {
       ctx.ui.notify(edit === "unchanged" ? "Stashed prompt unchanged" : "Stashed prompt edit cancelled", "info");
       return entries;
@@ -3316,7 +3181,7 @@ async function runBrowserAction(
     }
     const confirmed = ui.confirmed || await ctx.ui.confirm(
       "Delete stashed prompt?",
-      `Permanently delete “${truncateToWidth(action.entry.displayHeadline, 80)}” from ${action.entry.displayTimestamp}${action.scope === "all" ? ` · ${action.entry.displayOrigin}` : ""}?`,
+      `Permanently delete “${truncate(action.entry.displayHeadline, 80)}” from ${action.entry.displayTimestamp}${action.scope === "all" ? ` · ${action.entry.displayOrigin}` : ""}?`,
       { initialIndex: 1 },
     );
     if (!confirmed) return entries;
@@ -3359,8 +3224,7 @@ async function runBrowserAction(
   const { entry } = action;
   const pop = action.type === "pop";
   const { failures, outcome } = readStore(() => {
-    // A popped stash is deleted right after, so OMP makes its own image links.
-    const restored = restoreIntoComposer(ctx, entry, { forceQueue: action.type === "queue", links: !pop });
+    const restored = restoreIntoComposer(ctx, entry, { forceQueue: action.type === "queue" });
     // A pop keeps a locked stash, and one whose attachments didn't all come back.
     if (!pop || entry.locked || restored.length > 0) {
       markEntryUsed(entry);
@@ -3395,7 +3259,7 @@ async function run(ctx: ExtensionContext, action: () => Promise<void>): Promise<
   } catch (error) {
     const raw = error instanceof Error ? error.message : String(error);
     // Long enough for a storage error's path and the command that fixes it.
-    const message = truncateToWidth(displayText(raw).replaceAll("\n", " "), 320);
+    const message = truncate(displayText(raw).replaceAll("\n", " "), 320);
     ctx.ui.notify(`OMS failed: ${message}`, "error");
   }
 }
@@ -3421,8 +3285,8 @@ export default async function promptStash(pi: ExtensionAPI): Promise<void> {
   const startSession = async (ctx: ExtensionContext) => {
     if (!isMainTui(ctx)) return;
     pluginEvents = pi.events;
+    pluginApi = pi;
     pluginConfig = await loadPluginConfig(ctx.cwd, true);
-    installEditorBridge(ctx);
     warmStoragePermissions();
     if (pluginConfig.retentionDays > 0) {
       // The scan reads every stash file synchronously, so it runs after OMP finishes starting.

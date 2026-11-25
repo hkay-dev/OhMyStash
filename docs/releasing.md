@@ -33,7 +33,7 @@ git archive HEAD | tar -x -C "$OMS_CAPTURE_OUTPUT/source"
 artifact_name="$(npm pack "$OMS_CAPTURE_OUTPUT/source" --ignore-scripts --pack-destination "$OMS_CAPTURE_OUTPUT")"
 export OMS_CAPTURE_ARTIFACT="$OMS_CAPTURE_OUTPUT/$artifact_name"
 export OMS_CAPTURE_OMP="$(command -v omp)"
-export OMS_CAPTURE_OMP_VERSION=18.19.0
+export OMS_CAPTURE_OMP_VERSION=19.2.1
 npm exec -- tcut test showcase/ohmystash-settings.video.ts
 npm run capture:settings
 npm exec -- tcut doctor "$OMS_CAPTURE_OUTPUT/ohmystash-release.cast"
